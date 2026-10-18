@@ -290,7 +290,7 @@ class MainWindow(QMainWindow):
         backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default, "SQLite journal (*.sqlite)")
         if not backup:
             return
-        message = "Grant app access on {}?\n\n{} objects need changes.\nRecovery journal: {}\n\nKeep this journal to restore original permissions.".format(
+        message = "Grant app access on {}?\n\n{} objects need changes.\nRecovery journal: {}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
             self.target.text(), self.inspection["changes_needed"], backup)
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,
