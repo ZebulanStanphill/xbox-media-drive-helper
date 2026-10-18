@@ -1,0 +1,25 @@
+Xbox Media Drive Helper 0.1.0
+Requires macOS 15.8 or later.
+
+Choose Apple silicon (arm64) for M-series Macs, or Intel (x86_64) for Intel Macs.
+Open the disk image and drag Xbox Media Drive Helper.app to Applications.
+Open the installed copy, rather than running it from the disk image.
+Python, Qt and NTFS-3G are included; Homebrew and FUSE are not required.
+
+These local builds are ad-hoc signed and are not Apple notarized. If macOS
+blocks the first launch, attempt to open the installed app, then use
+System Settings > Privacy & Security > Open Anyway and confirm Open.
+No global security settings need to be disabled.
+
+Disk operations use the normal macOS administrator authorization prompt.
+Keep the recovery journal on your computer. Restoring original permissions
+requires that journal. The drive remains NTFS throughout.
+
+The bundled CLI is available in Terminal:
+  "/Applications/Xbox Media Drive Helper.app/Contents/MacOS/XboxMediaDrive" --cli --help
+
+Compatibility is checked against macOS 15.8 at build time. The release report
+states which CPU/runtime checks were actually performed. Native Intel hardware,
+macOS 15.8 itself, and physical Xbox drive operations still need validation.
+
+The source archive and third-party license notices accompany this release.
