@@ -1,4 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#e11d48"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">XM</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2e3338"/>
+      <stop offset="1" stop-color="#101214"/>
+    </linearGradient>
+    <linearGradient id="drive" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a6169"/>
+      <stop offset="1" stop-color="#2b2f34"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3fd43f"/>
+      <stop offset="1" stop-color="#0e7a0e"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <!-- USB cable -->
+  <path d="M512 290 L512 236 Q512 200 548 200 L700 200" fill="none" stroke="#1b1e21" stroke-width="30" stroke-linecap="round"/>
+  <path d="M512 290 L512 236 Q512 200 548 200 L700 200" fill="none" stroke="#8a929b" stroke-width="18" stroke-linecap="round"/>
+  <rect x="690" y="172" width="86" height="56" rx="10" fill="#b7bec6"/>
+  <rect x="776" y="182" width="44" height="36" rx="4" fill="#d9dee3"/>
+  <rect x="788" y="192" width="20" height="16" rx="2" fill="#7c848c"/>
+  <!-- External drive body -->
+  <rect x="222" y="290" width="580" height="444" rx="70" fill="#0b0c0e" opacity="0.55" transform="translate(0 22)"/>
+  <rect x="222" y="290" width="580" height="444" rx="70" fill="url(#drive)" stroke="#6c747d" stroke-width="6"/>
+  <rect x="262" y="314" width="500" height="10" rx="5" fill="#ffffff" opacity="0.18"/>
+  <!-- Media badge -->
+  <circle cx="512" cy="494" r="138" fill="#0b0c0e" opacity="0.35"/>
+  <circle cx="512" cy="488" r="132" fill="url(#badge)"/>
+  <path d="M478 418 L478 558 L590 488 Z" fill="#ffffff" stroke="#ffffff" stroke-width="18" stroke-linejoin="round"/>
+  <!-- Vents and activity light -->
+  <rect x="282" y="666" width="120" height="14" rx="7" fill="#1b1e21"/>
+  <rect x="282" y="636" width="120" height="14" rx="7" fill="#1b1e21"/>
+  <circle cx="732" cy="658" r="16" fill="#3fd43f"/>
 </svg>
