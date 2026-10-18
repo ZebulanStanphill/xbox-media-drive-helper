@@ -1,4 +1,4 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="xbox_media_drive/icon.svg" width="64" height="64" alt="">
 
 # Xbox Media Drive Helper
 
@@ -85,6 +85,8 @@ Use `--library /absolute/path/to/libntfs-3g.dylib` (macOS) or `.so` (Linux) befo
 6. To reverse the operation, reconnect and unmount the volume, open **Restore permissions**, and select its original journal.
 
 The UI stays unprivileged. macOS shows its standard administrator prompt for the separate CLI helper. Linux uses `pkexec` and needs a working PolicyKit authentication agent; install your distribution's polkit package if necessary. If graphical authorization is unavailable, use the CLI with `sudo`. NTFS-3G requires UID 0 even for image-file inspections. Journals created by the helper are root-owned, mode `0600`; restore through the app or inspect/copy them with `sudo`.
+
+On Linux, `packaging/linux/install.sh` adds a launcher entry and the icon for your user (no root needed); run it after installing the app.
 
 ## CLI
 

@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                               QListWidgetItem, QMainWindow, QMessageBox,
@@ -111,10 +112,31 @@ class Worker(QThread):
             self.failed.emit(str(exc))
 
 
+def app_icon():
+    """Render the bundled SVG at several sizes; fall back to no icon if QtSvg is unavailable."""
+    icon = QIcon()
+    try:
+        from PySide6.QtSvg import QSvgRenderer
+        svg = QSvgRenderer(str(Path(__file__).with_name("icon.svg")))
+        if not svg.isValid():
+            return icon
+        for size in (16, 32, 48, 64, 128, 256, 512):
+            image = QImage(size, size, QImage.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            svg.render(painter)
+            painter.end()
+            icon.addPixmap(QPixmap.fromImage(image))
+    except ImportError:
+        pass
+    return icon
+
+
 class MainWindow(QMainWindow):
     def __init__(self, auto_refresh=True):
         super().__init__()
         self.setWindowTitle("Xbox Media Drive Helper")
+        self.setWindowIcon(app_icon())
         self.resize(1040, 940)
         self.setMinimumSize(900, 780)
         self.worker = None
@@ -387,6 +409,8 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
+    # Lets Wayland/X11 desktops associate the window with the .desktop launcher.
+    app.setDesktopFileName("xbox-media-drive-helper")
     window = MainWindow()
     window.show()
     return app.exec()

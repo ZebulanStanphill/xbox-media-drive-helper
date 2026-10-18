@@ -22,3 +22,6 @@ xbox-media-drive-gui = "xbox_media_drive.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["xbox_media_drive*"]
+
+[tool.setuptools.package-data]
+xbox_media_drive = ["icon.svg"]

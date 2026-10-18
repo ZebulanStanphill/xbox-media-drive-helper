@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Xbox Media Drive Helper
+Comment=Prepare an NTFS media drive for Xbox One apps, or restore its permissions
+Exec=xbox-media-drive-gui
+Icon=xbox-media-drive-helper
+Terminal=false
+Categories=Utility;System;
+Keywords=Xbox;NTFS;USB;media;permissions;

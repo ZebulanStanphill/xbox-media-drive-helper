@@ -111,7 +111,7 @@ for size in (16, 32, 128, 256, 512):
         if not image.save(str(Path(sys.argv[2]) / name)):
             raise RuntimeError('Could not write icon image')
 """
-    run([python, "-c", script, ROOT / "assets/icon.svg", iconset], env=dict(env, QT_QPA_PLATFORM="offscreen"))
+    run([python, "-c", script, ROOT / "xbox_media_drive/icon.svg", iconset], env=dict(env, QT_QPA_PLATFORM="offscreen"))
     run(["iconutil", "-c", "icns", iconset, "-o", TOOLS / "AppIcon.icns"])
 
 
