@@ -276,7 +276,8 @@ class MainWindow(QMainWindow):
         self.activity.setPlaceholderText("Operation results will appear here.")
         layout.addWidget(self.activity)
         layout.addWidget(label("On your Xbox, choose “Use for Media” when prompted.", "muted"))
-        self.controls = [self.drives, self.refresh, self.image, self.target, self.tabs, self.library]
+        self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
+                         self.target, self.tabs, self.library]
         if auto_refresh:
             self.refresh_devices()
 
@@ -324,7 +325,7 @@ class MainWindow(QMainWindow):
         if not mounted:
             return False
         devices = [self.drives.item(row).data(Qt.UserRole) for row in range(self.drives.count())]
-        name = next((device["label"] for device in devices if device and device["path"] == path), path)
+        name = next((device["label"] or path for device in devices if device and device["path"] == path), path)
         question = ("{} is mounted. Unmount it now? The drive stays connected. "
                     "Don't use Eject in Finder — that disconnects it.".format(name))
         if QMessageBox.question(self, "Unmount volume", question) == QMessageBox.Yes:
@@ -387,7 +388,6 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.finished)
         for control in self.controls:
             control.setEnabled(False)
-        self.unmount_button.setEnabled(False)
         self.progress.setRange(0, 0)
         if listing:
             self.log("Finding external volumes…")

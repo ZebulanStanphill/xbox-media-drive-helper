@@ -9,7 +9,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QListWidgetItem, QMessageBox
+    from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox
     from xbox_media_drive.gui import MainWindow, STYLE, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
@@ -94,6 +94,7 @@ class GUITests(unittest.TestCase):
         return device
 
     def test_unmount_button_follows_the_selected_device(self):
+        self.assertIn(self.window.unmount_button, self.window.controls)
         self.assertFalse(self.window.unmount_button.isEnabled())
         self.add_device(mounted=True)
         self.assertTrue(self.window.unmount_button.isEnabled())
@@ -104,6 +105,53 @@ class GUITests(unittest.TestCase):
         self.window.drives.clear()
         self.add_device(mounted=False)
         self.assertFalse(self.window.unmount_button.isEnabled())
+
+    def test_successful_unmount_refresh_preserves_selection_and_inspection(self):
+        device = self.add_device(mounted=True)
+        inspection = {"ready": True, "changes_needed": 1, "identity": {"boot_sha256": "volume-id"}}
+        self.window.inspection = inspection
+        other = dict(device, path="/dev/disk8s1")
+        with patch("xbox_media_drive.gui.unmount", return_value=device["path"]) as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: other), SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
+                patch.object(QMessageBox, "warning") as warning:
+            self.window.unmount_selected()
+            self.assertIsNotNone(self.window.worker)
+            self.assertFalse(self.window.unmount_button.isEnabled())
+            self.wait_for_idle()
+        unmount.assert_called_once_with(device["path"])
+        warning.assert_not_called()
+        self.assertEqual(self.window.selected_device()["path"], device["path"])
+        self.assertFalse(self.window.selected_device()["mounted"])
+        self.assertEqual(self.window.target.text(), device["path"])
+        self.assertIs(self.window.inspection, inspection)
+        self.assertFalse(self.window.unmount_button.isEnabled())
+
+    def test_mounted_target_is_unmounted_then_preparation_continues(self):
+        device = self.add_device(mounted=True)
+        self.window.inspection = {"ready": True, "changes_needed": 2, "identity": {"boot_sha256": "volume-id"}}
+        journal = "/tmp/media-original.sqlite"
+        result = json.dumps({"changed": 2, "journal": journal})
+        with patch("xbox_media_drive.gui.is_mounted", side_effect=[True, False]), \
+                patch("xbox_media_drive.gui.unmount", return_value=device["path"]) as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]) as discover, \
+                patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(stdout=result, stderr="", returncode=0)) as helper, \
+                patch.object(QFileDialog, "getSaveFileName", return_value=(journal, "")) as save, \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, \
+                patch.object(QMessageBox, "warning") as warning:
+            self.window.prepare_volume()
+            self.wait_for_idle()
+        unmount.assert_called_once_with(device["path"])
+        discover.assert_called_once()
+        warning.assert_not_called()
+        save.assert_called_once()
+        self.assertEqual([call.args[1] for call in question.call_args_list], ["Unmount volume", "Prepare for Xbox"])
+        helper.assert_called_once()
+        command = helper.call_args.args[0]
+        self.assertEqual(command[1:3], ["prepare", device["path"]])
+        self.assertEqual(command[command.index("--backup") + 1], journal)
+        self.assertEqual(command[command.index("--expect-volume") + 1], "volume-id")
+        self.assertIn("Permissions prepared", self.window.status.text())
 
     def test_recovery_journal_advice_only_follows_prepare_and_restore_errors(self):
         for action, expected in (("prepare", True), ("restore", True), ("inspect", False), ("list", False), ("unmount", False)):

@@ -157,7 +157,8 @@ def validate_target(path):
         device_id = os.stat(target).st_rdev
         key = "{}:{}".format(os.major(device_id), os.minor(device_id))
         if any(line.split()[2] == key for line in Path("/proc/self/mountinfo").read_text().splitlines()):
-            raise DriveError("The selected device is mounted. Unmount it first (click Unmount in this app).")
+            raise DriveError("The selected device is mounted. Click Unmount in this app, "
+                             "or run udisksctl unmount -b {}.".format(target))
     else:
         raise DriveError("Supported platforms are Linux and macOS.")
     return target
