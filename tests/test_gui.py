@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import tempfile
 import unittest
 import time
 from contextlib import contextmanager
@@ -103,6 +104,21 @@ class GUITests(unittest.TestCase):
                 else:
                     save_file.assert_called_once()
                     open_file.assert_not_called()
+
+    def test_new_journal_dialog_refuses_an_existing_file_before_starting(self):
+        self.window.target.setText("/tmp/volume.img")
+        self.window.inspection = {"ready": True, "changes_needed": 2, "identity": {"boot_sha256": "volume-id"}}
+        with tempfile.NamedTemporaryFile(suffix=".sqlite") as existing, \
+                patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=(existing.name, "")) as save, \
+                patch.object(QMessageBox, "warning") as warning, \
+                patch.object(QMessageBox, "question") as question, \
+                patch.object(self.window, "start") as start:
+            self.window.prepare_volume()
+        self.assertEqual(save.call_args.kwargs["options"], QFileDialog.DontConfirmOverwrite)
+        self.assertIn("never overwritten", warning.call_args.args[2])
+        question.assert_not_called()
+        start.assert_not_called()
 
     def test_append_completion_explains_existing_journal_and_future_files(self):
         self.window.action = "prepare"

@@ -427,7 +427,14 @@ class MainWindow(QMainWindow):
                                                    "SQLite journal (*.sqlite);;All files (*)")
         else:
             default = str(Path.home() / ("xbox-media-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".sqlite"))
-            backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default, "SQLite journal (*.sqlite)")
+            backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default,
+                                                   "SQLite journal (*.sqlite)", options=QFileDialog.DontConfirmOverwrite)
+            if backup and Path(backup).exists():
+                QMessageBox.warning(self, "Journal already exists",
+                                    "{} already exists. Existing journals are never overwritten.\n\n"
+                                    "Choose a new file name, or use Add to Existing Journal to add this drive's new "
+                                    "files to its earlier journal.".format(backup))
+                return
         if not backup:
             return
         journal_message = ("Add {} objects to journal: {}" if append else "{} objects need changes.\nRecovery journal: {}").format(

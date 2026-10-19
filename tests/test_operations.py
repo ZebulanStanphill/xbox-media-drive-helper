@@ -166,6 +166,13 @@ class OperationTests(unittest.TestCase):
             self.prepare(append=True)
         self.assertEqual(self.volume.writes, 6)
 
+    def test_new_journal_never_overwrites_an_existing_file(self):
+        Path(self.backup).write_bytes(b"not a journal")
+        with self.assertRaisesRegex(DriveError, "already exists.*prepare --append"):
+            self.prepare()
+        self.assertEqual(Path(self.backup).read_bytes(), b"not a journal")
+        self.assertEqual(self.volume.writes, 0)
+
     def test_append_refused_before_writing_keeps_the_journal_prepared(self):
         self.prepare()
         self.volume.files["/Movies/film.mkv"][2] = descriptor([ace(mask=1)])
@@ -311,7 +318,7 @@ class OperationTests(unittest.TestCase):
 
     def test_different_volume_and_existing_journal_refused(self):
         self.prepare()
-        with self.assertRaises(FileExistsError):
+        with self.assertRaisesRegex(DriveError, "already exists"):
             self.prepare()
         Path(self.target).write_bytes(make_boot(b"87654321"))
         count = self.volume.writes

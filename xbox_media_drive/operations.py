@@ -42,7 +42,12 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
 def journal(path, create=False):
     if create:
         # Never clobber another recovery journal; secure before SQLite opens it.
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise DriveError("A recovery journal already exists at {}. Existing journals are never overwritten: "
+                             "choose a new file name, or add this drive's new files to its earlier journal with "
+                             "Add to Existing Journal (prepare --append).".format(path)) from None
         os.close(fd)
     elif not os.path.isfile(path) or os.path.islink(path):
         raise DriveError("Select an existing recovery journal file, not a symlink.")
