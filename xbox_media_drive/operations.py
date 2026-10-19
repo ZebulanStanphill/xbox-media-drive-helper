@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from . import DriveError, __version__
 from .devices import identity, require_host_backup, validate_target
 from .native import Volume
-from .security import grant, signature
+from .security import grant, lost_auto_inherited, signature
 
 
 def inspect(target, access="modify", library=None, volume_factory=Volume):
@@ -163,7 +163,7 @@ def restore(target, backup, library=None, progress=lambda value: None, volume_fa
                     current = signature(volume.get(path))
                     if current == signature(row["original"]):
                         unchanged += 1
-                    elif current == signature(row["prepared"]):
+                    elif current == signature(row["prepared"]) or lost_auto_inherited(current, signature(row["prepared"])):
                         volume.set(path, row["original"])
                         if signature(volume.get(path)) != signature(row["original"]):
                             raise DriveError("Restoration verification failed for {}".format(path))

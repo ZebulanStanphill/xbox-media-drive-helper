@@ -16,6 +16,11 @@ HEADER = struct.Struct("<BBHIIII")
 DACL_PRESENT = 0x0004
 SELF_RELATIVE = 0x8000
 INHERITED = 0x10
+DACL_AUTO_INHERIT_REQ = 0x0100
+DACL_AUTO_INHERITED = 0x0400
+# Request/transient control bits NTFS-3G never stores on a DACL-only write.
+# Windows does not persist the *_AUTO_INHERIT_REQ bits either.
+UNSTORED_CONTROL = 0x0040 | 0x0080 | DACL_AUTO_INHERIT_REQ | 0x0200 | 0x4000
 INHERIT_ONLY = 0x08
 
 
@@ -98,7 +103,30 @@ def acl_entries(acl):
 def signature(raw):
     """Compare semantic components, independent of component placement."""
     sd = Descriptor.parse(raw)
-    return sd.control, sd.owner, sd.group, sd.sacl, sd.dacl
+    return sd.control & ~UNSTORED_CONTROL, sd.owner, sd.group, sd.sacl, sd.dacl
+
+
+def ntfs3g_dacl_write(raw):
+    """Descriptor to pass for a DACL-only write so NTFS-3G keeps SE_DACL_AUTO_INHERITED.
+
+    NTFS-3G's merge stores SE_DACL_AUTO_INHERITED only when the caller sets
+    SE_DACL_AUTO_INHERIT_REQ, as Windows SetFileSecurity callers do.
+    """
+    control = struct.unpack_from("<H", raw, 2)[0]
+    if not control & DACL_AUTO_INHERITED:
+        return raw
+    return raw[:2] + struct.pack("<H", control | DACL_AUTO_INHERIT_REQ) + raw[4:]
+
+
+def lost_auto_inherited(current, prepared):
+    """Whether signature current is prepared with only SE_DACL_AUTO_INHERITED lost.
+
+    Earlier builds wrote without the request bit, so the first object's
+    write succeeded but failed verification. That object holds exactly the
+    prepared permissions and is safe to restore.
+    """
+    return (prepared[0] & DACL_AUTO_INHERITED and current[0] == prepared[0] & ~DACL_AUTO_INHERITED
+            and current[1:] == prepared[1:])
 
 
 def grant(raw, directory, access="modify"):

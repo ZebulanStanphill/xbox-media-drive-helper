@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import DriveError
-from .security import Descriptor
+from .security import Descriptor, ntfs3g_dacl_write
 
 CALLBACK = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p, C.c_int, C.c_int,
                       C.c_int64, C.c_uint64, C.c_uint)
@@ -120,7 +120,8 @@ class Volume:
             raise DriveError("Refusing to write through a read-only session.")
         Descriptor.parse(raw)
         # Only DACL_SECURITY_INFORMATION: NTFS-3G retains owner, group and SACL.
-        if not self.lib.ntfs_set_file_security(self.handle, path.encode("utf-8"), 4, C.create_string_buffer(raw)):
+        if not self.lib.ntfs_set_file_security(self.handle, path.encode("utf-8"), 4,
+                                               C.create_string_buffer(ntfs3g_dacl_write(raw))):
             raise DriveError("Cannot write permissions for {!r}: {}".format(path, os.strerror(C.get_errno())))
 
     def listdir(self, path):

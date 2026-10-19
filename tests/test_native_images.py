@@ -4,6 +4,7 @@ Only disposable images created under TemporaryDirectory are accessed. A test-onl
 initializer permits those images without UID 0; all other API calls are upstream.
 """
 import ctypes as C
+import struct
 import hashlib
 import os
 import subprocess
@@ -115,6 +116,48 @@ class NativeImageTests(unittest.TestCase):
             for path, value in before.items():
                 self.assertEqual(signature(volume.get(path)), value)
         self.assertEqual(self.tool("ntfscat", self.image, "/movie.mkv"), self.payload)
+
+    def windows_like(self):
+        """Give every object SE_DACL_AUTO_INHERITED, as Windows-formatted volumes have; mkntfs leaves it clear."""
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            for entry in list(volume.walk()):
+                raw = volume.get(entry.path)
+                control = struct.unpack_from("<H", raw, 2)[0] | 0x0400 | 0x0100  # AUTO_INHERITED + its request bit
+                volume.lib.ntfs_set_file_security(volume.handle, entry.path.encode(), 4,
+                                                  C.create_string_buffer(raw[:2] + struct.pack("<H", control) + raw[4:]))
+        with ImageVolume(self.image, library=self.library) as volume:
+            values = {entry.path: signature(volume.get(entry.path)) for entry in volume.walk()}
+        self.assertTrue(all(value[0] & 0x0400 for value in values.values()))
+        return values
+
+    def test_windows_auto_inherited_descriptors_round_trip(self):
+        before = self.windows_like()
+        prepare(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertTrue(all(signature(volume.get(path))[0] & 0x0400 for path in before))
+        self.assertEqual(restore(self.image, self.backup, library=self.library,
+                                 volume_factory=ImageVolume)["state"], "restored")
+        with ImageVolume(self.image, library=self.library) as volume:
+            for path, value in before.items():
+                self.assertEqual(signature(volume.get(path)), value)
+
+    def test_restore_recovers_a_write_that_dropped_auto_inherited(self):
+        # Versions before this fix wrote DACLs without the request bit, so NTFS-3G dropped
+        # SE_DACL_AUTO_INHERITED and verification of the first object failed.
+        before = self.windows_like()
+
+        class LegacyVolume(ImageVolume):
+            def set(self, path, raw):
+                if not self.lib.ntfs_set_file_security(self.handle, path.encode(), 4, C.create_string_buffer(raw)):
+                    raise DriveError("write failed")
+
+        with self.assertRaisesRegex(DriveError, "verification failed for /"):
+            prepare(self.image, self.backup, library=self.library, volume_factory=LegacyVolume)
+        result = restore(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual((result["state"], result["restored"], result["conflicts"]), ("restored", 1, []))
+        with ImageVolume(self.image, library=self.library) as volume:
+            for path, value in before.items():
+                self.assertEqual(signature(volume.get(path)), value)
 
     @unittest.skipIf(os.getuid() == 0, "Only applies to an unprivileged process")
     def test_production_initializer_requires_root_without_modifying_image(self):

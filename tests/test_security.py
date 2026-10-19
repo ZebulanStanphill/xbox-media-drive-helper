@@ -3,7 +3,7 @@ import unittest
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.security import (APP_PACKAGES, Descriptor, FULL, HEADER, MODIFY,
-                                       acl_entries, grant, signature)
+                                       acl_entries, grant, lost_auto_inherited, ntfs3g_dacl_write, signature)
 
 SYSTEM = bytes.fromhex("010100000000000512000000")
 
@@ -18,6 +18,24 @@ def descriptor(entries=None, control=0x9004, sacl=b""):
 
 
 class SecurityTests(unittest.TestCase):
+    def test_dacl_write_requests_auto_inherited_only_when_present(self):
+        windows = descriptor([ace()], control=0x9404)  # SELF_RELATIVE | PROTECTED | AUTO_INHERITED | PRESENT
+        self.assertEqual(struct.unpack_from("<H", ntfs3g_dacl_write(windows), 2)[0], 0x9504)
+        self.assertEqual(ntfs3g_dacl_write(windows)[4:], windows[4:])
+        plain = descriptor([ace()])
+        self.assertEqual(ntfs3g_dacl_write(plain), plain)
+        # The request bit is not stored, so it does not change the descriptor's signature.
+        self.assertEqual(signature(ntfs3g_dacl_write(windows)), signature(windows))
+
+    def test_lost_auto_inherited_matches_only_that_difference(self):
+        prepared = signature(grant(descriptor([ace()], control=0x9404), True))
+        dropped = (prepared[0] & ~0x0400,) + prepared[1:]
+        self.assertTrue(lost_auto_inherited(dropped, prepared))
+        self.assertFalse(lost_auto_inherited(prepared, prepared))
+        self.assertFalse(lost_auto_inherited(dropped[:4] + (b"",), prepared))
+        plain = signature(grant(descriptor([ace()]), True))
+        self.assertFalse(lost_auto_inherited(plain, plain))
+
     def test_grant_preserves_every_other_component_and_existing_ace(self):
         # SACL is opaque to the editor but must be preserved, including audit ACEs.
         audit = ace(kind=2)
