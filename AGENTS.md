@@ -6,7 +6,7 @@ even when they're made in the same session.
 
 # Versioning
 
-Every commit to `main` that changes code (the app, its tests, packaging or
+Every commit to `master` that changes code (the app, its tests, packaging or
 build scripts) must bump the version in that same commit, following
 [Semantic Versioning](https://semver.org): patch for fixes, minor for new
 features or changed behavior, major for incompatible changes such as a
