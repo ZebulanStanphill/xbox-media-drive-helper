@@ -1,4 +1,5 @@
 """Platform discovery and conservative checks before offline access."""
+import errno
 import hashlib
 import json
 import os
@@ -13,6 +14,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import DriveError
+
+MAC_DISK_ACCESS = ("macOS blocked access to {}. Open System Settings → Privacy & Security → Full Disk Access, "
+                   "turn on Xbox Media Drive Helper (add it with + if it isn't listed), then quit and reopen the app "
+                   "and try again.")
 
 
 def run(args):
@@ -204,8 +209,14 @@ def unmount(path):
 
 
 def identity(path):
-    with open(path, "rb", buffering=0) as disk:
-        boot = disk.read(512)
+    try:
+        with open(path, "rb", buffering=0) as disk:
+            boot = disk.read(512)
+    except PermissionError as exc:
+        # Privacy protection (TCC) denies raw removable-disk access with EPERM, even to root.
+        if sys.platform == "darwin" and exc.errno == errno.EPERM:
+            raise DriveError(MAC_DISK_ACCESS.format(path)) from exc
+        raise
     if boot[3:11] == b"EXFAT   ":
         raise DriveError("This volume is exFAT, not NTFS. exFAT has no file permissions, so there is nothing "
                          "for this tool to change. No changes made.")

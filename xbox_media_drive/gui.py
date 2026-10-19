@@ -46,6 +46,9 @@ QToolTip { background: #273d2e; color: white; border: 1px solid #55705d; }
 """
 
 
+PRIVACY_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
+
 def label(text, name=None):
     widget = QLabel(text)
     widget.setWordWrap(True)
@@ -451,6 +454,13 @@ class MainWindow(QMainWindow):
         self.log("Error: " + message)
         if self.action in ("prepare", "restore"):
             message += "\n\nIf preparation started, keep its recovery journal and use Restore permissions."
+        if sys.platform == "darwin" and "Full Disk Access" in message:
+            box = QMessageBox(QMessageBox.Warning, "Disk access needed", message, QMessageBox.Close, self)
+            settings = box.addButton("Open Privacy Settings", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is settings:
+                subprocess.run(["open", PRIVACY_SETTINGS])
+            return
         QMessageBox.warning(self, "Operation could not complete", message)
 
     def finished(self):

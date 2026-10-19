@@ -37,6 +37,15 @@ class DeviceTests(unittest.TestCase):
                 patch("xbox_media_drive.devices.mac_info", side_effect=infos.__getitem__):
             self.assertEqual([device.mounted for device in discover()], [True, False])
 
+    def test_mac_privacy_denial_explains_full_disk_access(self):
+        denied = PermissionError(1, "Operation not permitted")
+        with patch("sys.platform", "darwin"), patch("builtins.open", side_effect=denied):
+            with self.assertRaisesRegex(DriveError, "Full Disk Access"):
+                identity("/dev/disk8s1")
+        with patch("sys.platform", "linux"), patch("builtins.open", side_effect=denied):
+            with self.assertRaises(PermissionError):
+                identity("/dev/sdb1")
+
     def test_linux_external_status_inherits_from_parent_disk(self):
         disk = {"path": "/dev/sdz", "type": "disk", "tran": "usb", "children": [
             {"path": "/dev/sdz1", "type": "part", "tran": None}]}
