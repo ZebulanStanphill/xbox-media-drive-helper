@@ -206,6 +206,9 @@ def unmount(path):
 def identity(path):
     with open(path, "rb", buffering=0) as disk:
         boot = disk.read(512)
+    if boot[3:11] == b"EXFAT   ":
+        raise DriveError("This volume is exFAT, not NTFS. exFAT has no file permissions, so there is nothing "
+                         "for this tool to change. No changes made.")
     if len(boot) != 512 or boot[3:11] != b"NTFS    " or boot[510:512] != b"\x55\xaa":
         raise DriveError("This is not an NTFS volume boot sector. Select a partition, not an MBR/GPT disk. No changes made.")
     sector_size = struct.unpack_from("<H", boot, 11)[0]

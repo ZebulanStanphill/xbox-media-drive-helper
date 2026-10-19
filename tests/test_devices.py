@@ -23,6 +23,9 @@ class DeviceTests(unittest.TestCase):
             image.write_bytes(b"\0" * 512)
             with self.assertRaisesRegex(DriveError, "not an NTFS"):
                 identity(image)
+            image.write_bytes(b"\xebv\x90EXFAT   " + b"\0" * 498 + b"\x55\xaa")
+            with self.assertRaisesRegex(DriveError, "exFAT, not NTFS"):
+                identity(image)
 
     def test_mac_discovery_reports_mounted_from_mount_point(self):
         # Real diskutil plists have MountPoint ("" when unmounted) and no Mounted key.
