@@ -4,6 +4,18 @@ Keep each commit focused: implement one change or fix per commit, with the
 documentation for that change. Split unrelated changes into separate commits,
 even when they're made in the same session.
 
+# Versioning
+
+Every commit to `main` that changes code (the app, its tests, packaging or
+build scripts) must bump the version in that same commit, following
+[Semantic Versioning](https://semver.org): patch for fixes, minor for new
+features or changed behavior, major for incompatible changes such as a
+recovery-journal format that older versions can't read. Commits that only
+change documentation or agent instructions don't need a bump.
+
+The version is defined only in `xbox_media_drive/__init__.py` (`__version__`);
+`pyproject.toml`, the macOS app bundle and the DMG names read it from there.
+
 # Commit attribution
 
 Every commit created or amended with agent assistance must name the agents and
