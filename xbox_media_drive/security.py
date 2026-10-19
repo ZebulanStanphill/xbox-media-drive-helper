@@ -22,6 +22,8 @@ DACL_AUTO_INHERITED = 0x0400
 # Windows does not persist the *_AUTO_INHERIT_REQ bits either.
 UNSTORED_CONTROL = 0x0040 | 0x0080 | DACL_AUTO_INHERIT_REQ | 0x0200 | 0x4000
 INHERIT_ONLY = 0x08
+# Generic rights as NTFS maps them for files: GENERIC_READ/WRITE/EXECUTE/ALL.
+GENERIC_RIGHTS = ((0x80000000, 0x00120089), (0x40000000, 0x00120116), (0x20000000, 0x001200A0), (0x10000000, FULL))
 
 
 @dataclass(frozen=True)
@@ -152,8 +154,9 @@ def grant(raw, directory, access="modify"):
         inherited_seen |= bool(ace[1] & INHERITED)
         if sid == APP_PACKAGES:
             rights = struct.unpack_from("<I", ace, 4)[0]
-            if rights & 0x10000000:  # GENERIC_ALL
-                rights |= FULL
+            for generic, specific in GENERIC_RIGHTS:
+                if rights & generic:
+                    rights |= specific
             if not ace[1] & INHERIT_ONLY:
                 allowed |= rights
             if ace[1] & 3 == 3 and not ace[1] & 4:  # OI, CI; no NO_PROPAGATE

@@ -65,6 +65,14 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(result[0], ace(APP_PACKAGES, 0x120089))
         self.assertEqual(len(result), 2)
 
+    def test_generic_rights_count_toward_an_existing_grant(self):
+        # GENERIC_READ|WRITE|EXECUTE plus DELETE is exactly Modify once NTFS maps it for files.
+        generic_modify = ace(APP_PACKAGES, 0xE0010000, 3)
+        self.assertEqual(grant(descriptor([generic_modify]), True), descriptor([generic_modify]))
+        self.assertNotEqual(signature(grant(descriptor([generic_modify]), True, "full")), signature(descriptor([generic_modify])))
+        generic_read = descriptor([ace(APP_PACKAGES, 0x80000000)])
+        self.assertNotEqual(signature(grant(generic_read, False)), signature(generic_read))
+
     def test_inherit_only_and_no_propagate_do_not_count_as_full_grant(self):
         for flags in (0x0B, 0x07, 0):
             raw = descriptor([ace(APP_PACKAGES, FULL, flags)])
