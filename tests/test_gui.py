@@ -2,11 +2,14 @@ import json
 import os
 import shlex
 import unittest
+import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QListWidgetItem, QMessageBox
     from xbox_media_drive.gui import MainWindow, STYLE, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
@@ -74,3 +77,89 @@ class GUITests(unittest.TestCase):
         with patch.object(__import__("sys"), "frozen", True, create=True):
             command = helper_command(["inspect", "/dev/test"], elevate=False)
         self.assertEqual(command[1:], ["--cli", "--json", "inspect", "/dev/test"])
+
+    def wait_for_idle(self):
+        deadline = time.monotonic() + 5
+        while (self.window.worker is not None or self.window.followups) and time.monotonic() < deadline:
+            self.app.processEvents()
+        self.app.processEvents()
+        self.assertIsNone(self.window.worker)
+
+    def add_device(self, mounted, path="/dev/disk9s1"):
+        device = {"path": path, "label": "Media", "size": 10**9, "filesystem": "NTFS", "mounted": mounted, "external": True}
+        item = QListWidgetItem("Media")
+        item.setData(Qt.UserRole, device)
+        self.window.drives.addItem(item)
+        self.window.drives.setCurrentItem(item)
+        return device
+
+    def test_unmount_button_follows_the_selected_device(self):
+        self.assertFalse(self.window.unmount_button.isEnabled())
+        self.add_device(mounted=True)
+        self.assertTrue(self.window.unmount_button.isEnabled())
+        self.window.worker = SimpleNamespace()
+        self.window.update_unmount_button()
+        self.assertFalse(self.window.unmount_button.isEnabled())
+        self.window.worker = None
+        self.window.drives.clear()
+        self.add_device(mounted=False)
+        self.assertFalse(self.window.unmount_button.isEnabled())
+
+    def test_recovery_journal_advice_only_follows_prepare_and_restore_errors(self):
+        for action, expected in (("prepare", True), ("restore", True), ("inspect", False), ("list", False), ("unmount", False)):
+            with self.subTest(action=action), patch.object(QMessageBox, "warning") as warning:
+                self.window.action = action
+                self.window.failed("It broke")
+                self.assertEqual("recovery journal" in warning.call_args.args[2], expected)
+
+    def test_mounted_target_is_unmounted_then_the_inspection_continues(self):
+        self.add_device(mounted=True)
+        self.window.target.setText("/dev/disk9s1")
+        commands = []
+        result = '{"ready": true, "objects": 1, "changes_needed": 1, "skipped_reparse_points": [], "blockers": []}'
+
+        def helper(*args, **kwargs):
+            commands.append(args[0])
+            return SimpleNamespace(stdout=result, stderr="", returncode=0)
+
+        with patch("xbox_media_drive.gui.is_mounted", side_effect=[True, False]), \
+                patch("xbox_media_drive.gui.unmount", return_value="/dev/disk9s1") as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[]), \
+                patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                patch("xbox_media_drive.gui.subprocess.run", side_effect=helper), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question:
+            self.window.inspect_volume()
+            self.wait_for_idle()
+        self.assertIn("Media is mounted. Unmount it now?", question.call_args.args[2])
+        unmount.assert_called_once_with("/dev/disk9s1")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("inspect", commands[0])
+        self.assertTrue(self.window.inspection["ready"])
+        self.assertIn("Unmounted /dev/disk9s1. The drive stays connected.", self.window.activity.toPlainText())
+
+    def test_declining_the_unmount_prompt_does_nothing(self):
+        self.window.target.setText("/dev/disk9s1")
+        with patch("xbox_media_drive.gui.is_mounted", return_value=True), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.No), \
+                patch.object(self.window, "start") as start:
+            self.window.inspect_volume()
+        start.assert_not_called()
+
+    def test_unmounted_targets_and_images_skip_the_prompt(self):
+        self.window.target.setText("/tmp/volume.img")
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch.object(QMessageBox, "question") as question, patch.object(self.window, "start") as start:
+            self.window.inspect_volume()
+        question.assert_not_called()
+        self.assertEqual(start.call_args.args[0], "inspect")
+
+    def test_disconnected_drive_error_refreshes_the_list_when_the_worker_finishes(self):
+        self.window.target.setText("/dev/disk9s1")
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch("xbox_media_drive.gui.subprocess.run", side_effect=DriveError("/dev/disk9s1 is no longer connected.")), \
+                patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
+                patch("xbox_media_drive.gui.discover", return_value=[]) as discover, \
+                patch.object(QMessageBox, "warning"):
+            self.window.inspect_volume()
+            self.wait_for_idle()
+        discover.assert_called_once()

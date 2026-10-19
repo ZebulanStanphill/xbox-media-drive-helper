@@ -78,11 +78,11 @@ Use `--library /absolute/path/to/libntfs-3g.dylib` (macOS) or `.so` (Linux) befo
 ```
 
 1. Select the external NTFS partition, or open a raw NTFS volume image.
-2. Unmount that volume using your OS. Keep the drive connected.
+2. Click **Unmount** to unmount it (inspecting a mounted volume also offers to). Do not use Eject or the OS's eject button: that disconnects the drive. If you already ejected it, unplug and reconnect it, then click **Refresh drives**.
 3. Click **Inspect permissions**. This is a read-only scan.
 4. Click **Prepare for Xbox**, save a new recovery journal on your computer, and confirm the displayed target.
 5. When complete, connect it to Xbox and choose **Use for Media**.
-6. To reverse the operation, reconnect and unmount the volume, open **Restore permissions**, and select its original journal.
+6. To reverse the operation, reconnect the drive, click **Unmount**, open **Restore permissions**, and select its original journal.
 
 The UI stays unprivileged. macOS shows its standard administrator prompt for the separate CLI helper. Linux uses `pkexec` and needs a working PolicyKit authentication agent; install your distribution's polkit package if necessary. If graphical authorization is unavailable, use the CLI with `sudo`. NTFS-3G requires UID 0 even for image-file inspections. Journals created by the helper are root-owned, mode `0600`; restore through the app or inspect/copy them with `sudo`.
 

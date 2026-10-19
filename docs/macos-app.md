@@ -22,6 +22,10 @@ unprivileged and launches the same bundled executable in CLI mode as the helper.
 The app must be on the local disk, rather than running from its installation
 image, before using disk operations.
 
+macOS mounts NTFS drives automatically. In the app, click **Unmount** on the
+selected volume rather than Ejecting it in Finder: Eject disconnects the drive,
+and it must stay connected.
+
 ## Bundled CLI
 
 ```sh

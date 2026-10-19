@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError
-from .devices import discover
+from .devices import discover, is_mounted, unmount
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -94,15 +94,19 @@ class Worker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, arguments=None, listing=False):
+    def __init__(self, arguments=None, listing=False, unmount=None):
         super().__init__()
         self.arguments = arguments
         self.listing = listing
+        self.unmount = unmount
 
     def run(self):
         try:
             if self.listing:
                 self.done.emit({"devices": [device.to_dict() for device in discover()]})
+            elif self.unmount:
+                # Unmounting needs no privileges, so it never goes through the elevated helper.
+                self.done.emit({"unmounted": unmount(self.unmount)})
             else:
                 # NTFS-3G's security API requires root for images as well as disks.
                 command = helper_command(self.arguments, elevate=True)
@@ -142,6 +146,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.inspection = None
         self.action = None
+        self.followups = []
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
@@ -178,9 +183,15 @@ class MainWindow(QMainWindow):
         self.refresh.clicked.connect(self.refresh_devices)
         self.image = QPushButton("Open NTFS image…")
         self.image.clicked.connect(self.select_image)
-        left.addWidget(self.refresh)
+        self.unmount_button = QPushButton("Unmount")
+        self.unmount_button.setEnabled(False)
+        self.unmount_button.clicked.connect(self.unmount_selected)
+        drive_buttons = QHBoxLayout()
+        drive_buttons.addWidget(self.refresh, 1)
+        drive_buttons.addWidget(self.unmount_button, 1)
+        left.addLayout(drive_buttons)
         left.addWidget(self.image)
-        left.addWidget(label("Unmount the volume before inspecting it. Ejecting the whole drive makes it unavailable.", "muted"))
+        left.addWidget(label("Click Unmount before inspecting a volume; do not use Eject, which disconnects the drive.", "muted"))
         body.addLayout(left, 2)
 
         right = QVBoxLayout()
@@ -280,9 +291,18 @@ class MainWindow(QMainWindow):
         self.prepare_button.setEnabled(False)
         self.status.setText("Inspect this volume before preparing it.")
 
+    def selected_device(self):
+        item = self.drives.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def update_unmount_button(self):
+        device = self.selected_device()
+        self.unmount_button.setEnabled(self.worker is None and bool(device and device["mounted"]))
+
     def select_drive(self, item, previous=None):
         if item:
             self.target.setText(item.data(Qt.UserRole)["path"])
+        self.update_unmount_button()
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open raw NTFS volume image", "", "All files (*)")
@@ -291,6 +311,31 @@ class MainWindow(QMainWindow):
 
     def refresh_devices(self):
         self.start("list", listing=True)
+
+    def unmount_selected(self):
+        device = self.selected_device()
+        if device and device["mounted"]:
+            self.start("unmount", unmount=device["path"])
+
+    def offer_unmount(self, resume):
+        """If the target is mounted, offer to unmount it and then call resume. Returns True when it took over."""
+        path = self.target.text().strip()
+        try:
+            mounted = is_mounted(path)
+        except DriveError:
+            return False
+        if not mounted:
+            return False
+        devices = [self.drives.item(row).data(Qt.UserRole) for row in range(self.drives.count())]
+        name = next((device["label"] for device in devices if device and device["path"] == path), path)
+        question = ("{} is mounted. Unmount it now? The drive stays connected. "
+                    "Don't use Eject in Finder — that disconnects it.".format(name))
+        if QMessageBox.question(self, "Unmount volume", question) == QMessageBox.Yes:
+            self.followups = [resume]
+            self.start("unmount", unmount=path)
+        else:
+            self.log("{} is still mounted. Unmount it before continuing.".format(path))
+        return True
 
     def arguments(self, command):
         args = []
@@ -301,12 +346,16 @@ class MainWindow(QMainWindow):
 
     def inspect_volume(self):
         if self.target.text().strip():
+            if self.offer_unmount(self.inspect_volume):
+                return
             self.start("inspect", self.arguments("inspect") + ["--access", self.access.currentData()])
         else:
             self.log("Choose a volume or enter its device path first.")
 
     def prepare_volume(self):
         if not self.inspection or not self.inspection["ready"]:
+            return
+        if self.offer_unmount(self.prepare_volume):
             return
         default = str(Path.home() / ("xbox-media-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".sqlite"))
         backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default, "SQLite journal (*.sqlite)")
@@ -322,42 +371,58 @@ class MainWindow(QMainWindow):
         if not self.target.text().strip():
             self.log("Choose the original NTFS volume first.")
             return
+        if self.offer_unmount(self.restore_volume):
+            return
         backup, _ = QFileDialog.getOpenFileName(self, "Choose recovery journal", str(Path.home()), "SQLite journal (*.sqlite);;All files (*)")
         if backup and QMessageBox.question(self, "Restore permissions", "Restore original permissions on {} using {}?".format(
                 self.target.text(), backup)) == QMessageBox.Yes:
             self.start("restore", self.arguments("restore") + ["--backup", backup, "--yes"])
 
-    def start(self, action, arguments=None, listing=False):
+    def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False):
         if self.worker is not None:
             return
-        if listing:
+        if listing and not keep_inspection:
             self.invalidate()
         self.action = action
-        self.worker = Worker(arguments, listing)
+        self.worker = Worker(arguments, listing, unmount)
         self.worker.done.connect(self.completed)
         self.worker.failed.connect(self.failed)
         self.worker.finished.connect(self.finished)
         for control in self.controls:
             control.setEnabled(False)
+        self.unmount_button.setEnabled(False)
         self.progress.setRange(0, 0)
-        self.log("Finding external volumes…" if listing else "{}: waiting for authorization or processing the volume…".format(action.capitalize()))
+        if listing:
+            self.log("Finding external volumes…")
+        elif unmount:
+            self.log("Unmounting {}…".format(unmount))
+        else:
+            self.log("{}: waiting for authorization or processing the volume…".format(action.capitalize()))
         self.worker.start()
 
     def completed(self, result):
         if self.action == "list":
+            previous = self.selected_device()
             self.drives.clear()
             for device in result["devices"]:
                 size = "{:.1f} GB".format(device["size"] / 10**9)
-                item = QListWidgetItem("{}\n{}  ·  {}\n{}".format(device["label"], device["filesystem"], size,
-                                      "Mounted — unmount first" if device["mounted"] else device["path"]))
+                item = QListWidgetItem("{}\n{}  ·  {}\n{}".format(
+                    device["label"], device["filesystem"], size,
+                    device["path"] + "  ·  Mounted — click Unmount" if device["mounted"] else device["path"]))
                 item.setData(Qt.UserRole, device)
                 self.drives.addItem(item)
+                if previous and device["path"] == previous["path"]:
+                    self.drives.setCurrentItem(item)
             self.log("Found {} external volumes.".format(len(result["devices"])))
             if not result["devices"]:
                 item = QListWidgetItem("No external volumes\nConnect a drive, then refresh.")
                 item.setFlags(Qt.NoItemFlags)
                 self.drives.addItem(item)
                 self.status.setText("No external volumes found. Connect a drive and refresh, or open an NTFS image.")
+        elif self.action == "unmount":
+            self.log("Unmounted {}. The drive stays connected.".format(result["unmounted"]))
+            # Refresh the list without discarding an inspection, then resume any action that asked for the unmount.
+            self.followups.insert(0, lambda: self.start("list", listing=True, keep_inspection=True))
         elif self.action == "inspect":
             self.inspection = result
             self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0)
@@ -386,8 +451,13 @@ class MainWindow(QMainWindow):
 
     def failed(self, message):
         self.invalidate()
+        self.followups = []
+        if "is no longer connected" in message:
+            self.followups.append(self.refresh_devices)
         self.log("Error: " + message)
-        QMessageBox.warning(self, "Operation could not complete", message + "\n\nIf preparation started, keep its recovery journal and use Restore permissions.")
+        if self.action in ("prepare", "restore"):
+            message += "\n\nIf preparation started, keep its recovery journal and use Restore permissions."
+        QMessageBox.warning(self, "Operation could not complete", message)
 
     def finished(self):
         self.worker.deleteLater()
@@ -396,6 +466,9 @@ class MainWindow(QMainWindow):
             control.setEnabled(True)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
+        self.update_unmount_button()
+        while self.followups and self.worker is None:
+            self.followups.pop(0)()
 
     def closeEvent(self, event):
         if self.worker is not None:

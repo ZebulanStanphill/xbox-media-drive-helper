@@ -4,6 +4,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -19,7 +20,12 @@ def run(args):
         result = subprocess.run(args, capture_output=True, check=True, timeout=30)
         return result.stdout
     except (OSError, subprocess.SubprocessError) as exc:
-        raise DriveError("Could not run {}: {}".format(args[0], exc)) from exc
+        # CalledProcessError's text omits the tool's own explanation, e.g. diskutil's "dissented by PID".
+        detail = ""
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail = "\n".join(text.decode(errors="replace").strip() for text in (exc.stderr, exc.stdout)
+                               if text and text.strip())
+        raise DriveError("Could not run {}: {}".format(args[0], detail or exc)) from exc
 
 
 @dataclass
@@ -76,9 +82,45 @@ def discover():
     raise DriveError("Supported platforms are Linux and macOS.")
 
 
+def resolve_path(path):
+    try:
+        return str(Path(path).expanduser().resolve(strict=True))
+    except FileNotFoundError:
+        if not str(path).startswith("/dev/"):
+            raise DriveError("{} was not found.".format(path)) from None
+        raise DriveError("{} is no longer connected. If you ejected it, unplug and reconnect the drive, "
+                         "click Refresh, and use Unmount in this app instead of Eject.".format(path)) from None
+
+
+def mac_device(target):
+    """Return the buffered block device path and its info for an external physical macOS device."""
+    if not re.fullmatch(r"/dev/r?disk\d+(s\d+)?", target):
+        raise DriveError("Unsupported macOS device path.")
+    # Use buffered block devices: these permit the small reads used by this tool.
+    target = target.replace("/dev/rdisk", "/dev/disk", 1)
+    info = mac_info(target)
+    if info.get("Internal", True) or info.get("VirtualOrPhysical") == "Virtual":
+        raise DriveError("Only external physical drives can be modified.")
+    return target, info
+
+
+def require_mac_partition(info):
+    if info.get("Whole") and info.get("Content") in ("GUID_partition_scheme", "FDisk_partition_scheme"):
+        raise DriveError("Select the NTFS partition (for example /dev/disk4s1), not the whole disk.")
+
+
+def linux_device(target):
+    """Return the lsblk node of an external Linux device."""
+    match = next(((node, external) for node, external in linux_nodes()
+                  if os.path.realpath(node["path"]) == target), None)
+    if not match or not match[1]:
+        raise DriveError("Only external drives reported by lsblk can be modified.")
+    return match[0]
+
+
 def validate_target(path):
     """Return a canonical, unmounted image or external partition path."""
-    target = str(Path(path).expanduser().resolve(strict=True))
+    target = resolve_path(path)
     mode = os.stat(target).st_mode
     if stat.S_ISREG(mode):
         if os.stat(target).st_nlink != 1:
@@ -96,32 +138,68 @@ def validate_target(path):
     if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
         raise DriveError("Select an external NTFS partition or an NTFS volume image.")
     if sys.platform == "darwin":
-        if not re.fullmatch(r"/dev/r?disk\d+(s\d+)?", target):
-            raise DriveError("Unsupported macOS device path.")
-        # Use buffered block devices: these permit the small reads used by this tool.
-        target = target.replace("/dev/rdisk", "/dev/disk", 1)
-        info = mac_info(target)
-        if info.get("Internal", True) or info.get("VirtualOrPhysical") == "Virtual":
-            raise DriveError("Only external physical drives can be modified.")
+        target, info = mac_device(target)
         if info.get("Mounted") or info.get("MountPoint"):
-            raise DriveError("Unmount the selected volume first with diskutil unmount {}.".format(target))
-        if info.get("Whole") and info.get("Content") in ("GUID_partition_scheme", "FDisk_partition_scheme"):
-            raise DriveError("Select the NTFS partition (for example /dev/disk4s1), not the whole disk.")
+            raise DriveError("Unmount the selected volume first: click Unmount in this app, or run diskutil unmount {}. "
+                             "Don't use Eject; it disconnects the drive.".format(target))
+        require_mac_partition(info)
     elif sys.platform.startswith("linux"):
-        match = next(((node, external) for node, external in linux_nodes()
-                      if os.path.realpath(node["path"]) == target), None)
-        if not match or not match[1]:
-            raise DriveError("Only external drives reported by lsblk can be modified.")
-        node = match[0]
+        node = linux_device(target)
         if any(node.get("mountpoints") or []) or node.get("children"):
-            raise DriveError("Unmount the selected volume and select its NTFS partition, not the whole disk.")
+            raise DriveError("Unmount the selected volume (click Unmount in this app, or run udisksctl unmount -b {}) "
+                             "and select its NTFS partition, not the whole disk.".format(target))
         # Kernel mount info includes bind mounts, aliases and other mount namespaces visible here.
         device_id = os.stat(target).st_rdev
         key = "{}:{}".format(os.major(device_id), os.minor(device_id))
         if any(line.split()[2] == key for line in Path("/proc/self/mountinfo").read_text().splitlines()):
-            raise DriveError("The selected device is mounted. Unmount it first.")
+            raise DriveError("The selected device is mounted. Unmount it first (click Unmount in this app).")
     else:
         raise DriveError("Supported platforms are Linux and macOS.")
+    return target
+
+
+def is_mounted(path):
+    """Whether path is a mounted device. Images and missing paths are not; validate_target reports those."""
+    try:
+        target = str(Path(path).expanduser().resolve(strict=True))
+        mode = os.stat(target).st_mode
+    except OSError:
+        return False
+    if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
+        return False
+    if sys.platform == "darwin":
+        if not re.fullmatch(r"/dev/r?disk\d+(s\d+)?", target):
+            return False
+        info = mac_info(target.replace("/dev/rdisk", "/dev/disk", 1))
+        return bool(info.get("Mounted") or info.get("MountPoint"))
+    if sys.platform.startswith("linux"):
+        return any(any(node.get("mountpoints") or []) for node, _ in linux_nodes()
+                   if os.path.realpath(node["path"]) == target)
+    return False
+
+
+def unmount(path):
+    """Unmount a mounted external partition without ejecting or disconnecting it. Needs no privileges."""
+    target = resolve_path(path)
+    mode = os.stat(target).st_mode
+    if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
+        raise DriveError("Only external partitions can be unmounted.")
+    if sys.platform == "darwin":
+        target, info = mac_device(target)
+        require_mac_partition(info)
+        command = ["diskutil", "unmount", target]
+    elif sys.platform.startswith("linux"):
+        if linux_device(target).get("children"):
+            raise DriveError("Select the NTFS partition, not the whole disk.")
+        if not shutil.which("udisksctl"):
+            raise DriveError("udisksctl is not installed. Unmount {0} with your file manager or sudo umount {0}.".format(target))
+        command = ["udisksctl", "unmount", "-b", target]
+    else:
+        raise DriveError("Supported platforms are Linux and macOS.")
+    try:
+        run(command)
+    except DriveError as exc:
+        raise DriveError("{}\nClose any apps or windows using the drive, then try again.".format(exc)) from exc
     return target
 
 
