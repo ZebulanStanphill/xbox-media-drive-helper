@@ -98,11 +98,9 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
                 raise DriveError("Unsupported recovery journal version.")
             if get_meta(db, "identity") != info:
                 raise DriveError("This recovery journal belongs to a different NTFS volume. No permissions changed.")
-            state = get_meta(db, "state")
-            if state.startswith("restor"):
+            # A restore that failed before touching the drive leaves no restored rows and is no bar.
+            if db.execute("SELECT 1 FROM entries WHERE restored=1 LIMIT 1").fetchone():
                 raise DriveError("This journal was already used to restore the drive. Prepare with a new journal.")
-            if state not in ("prepared", "interrupted", "applying", "planning"):
-                raise DriveError("This journal cannot be used to prepare the drive in its current state.")
             put_meta(db, "updated", datetime.now(timezone.utc).isoformat())
         else:
             put_meta(db, "format", 1)
@@ -110,7 +108,9 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
             put_meta(db, "created", datetime.now(timezone.utc).isoformat())
             put_meta(db, "access", access)
         put_meta(db, "tool_version", __version__)
+        previous_state = get_meta(db, "state") if append else None
         put_meta(db, "state", "planning")
+        touched = False
         try:
             with volume_factory(target, writable=True, library=library) as volume:
                 if identity(target) != info:
@@ -155,6 +155,7 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
                     if append and (current == prepared or lost_auto_inherited(current, prepared)):
                         pass  # A prior run wrote this ACL but did not mark it durably.
                     elif current == signature(row["original"]):
+                        touched = True
                         volume.set(path, row["prepared"])
                         if signature(volume.get(path)) != prepared:
                             raise DriveError("Permission verification failed for {}".format(path))
@@ -169,7 +170,8 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
         except BaseException:
             # Do not mask the failure if the host has run out of journal space.
             try:
-                put_meta(db, "state", "interrupted")
+                # An append refused before its first write leaves a prepared drive prepared.
+                put_meta(db, "state", previous_state if previous_state == "prepared" and not touched else "interrupted")
             except sqlite3.Error:
                 pass
             raise

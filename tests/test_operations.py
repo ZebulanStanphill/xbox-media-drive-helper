@@ -147,17 +147,31 @@ class OperationTests(unittest.TestCase):
             factory.assert_not_called()
         self.assertEqual(self.volume.writes, 3)
 
-    def test_append_rejects_restoration_states_and_invalid_metadata(self):
+    def test_append_rejects_used_journals_and_invalid_metadata(self):
         self.prepare()
-        for state in ("restoring", "restored", "restore-incomplete", "restore-interrupted", "unknown"):
-            with self.subTest(state=state), journal(self.backup) as db:
-                put_meta(db, "state", state)
-                with self.assertRaisesRegex(DriveError, "already used to restore" if state.startswith("restor") else "current state"):
-                    self.prepare(append=True)
+        # A restore that could not open the drive touched nothing, so appending stays possible.
+        with patch("xbox_media_drive.operations.Volume", side_effect=DriveError("busy")) as factory:
+            with self.assertRaisesRegex(DriveError, "busy"):
+                restore(self.target, self.backup, volume_factory=factory)
+        self.assertEqual(journal_info(self.backup)["state"], "restore-interrupted")
+        self.assertEqual(self.prepare(append=True)["changed"], 0)
+        self.assertEqual(journal_info(self.backup)["state"], "prepared")
+        # Once any object has been restored the journal is spent.
+        self.restore()
+        with self.assertRaisesRegex(DriveError, "already used to restore"):
+            self.prepare(append=True)
         with journal(self.backup) as db:
             put_meta(db, "format", 2)
         with self.assertRaisesRegex(DriveError, "Unsupported recovery journal"):
             self.prepare(append=True)
+        self.assertEqual(self.volume.writes, 6)
+
+    def test_append_refused_before_writing_keeps_the_journal_prepared(self):
+        self.prepare()
+        self.volume.files["/Movies/film.mkv"][2] = descriptor([ace(mask=1)])
+        with self.assertRaisesRegex(DriveError, "changed since this journal recorded it"):
+            self.prepare(append=True)
+        self.assertEqual(journal_info(self.backup)["state"], "prepared")
         self.assertEqual(self.volume.writes, 3)
 
     def test_append_requires_existing_journal(self):
