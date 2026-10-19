@@ -131,6 +131,17 @@ class GUITests(unittest.TestCase):
         self.assertIn("Files copied in Windows inherit access automatically", dialog[0][1])
         self.assertIn("Added 2 objects", self.window.status.text())
 
+    def test_backup_warning_is_always_visible_and_repeated_before_changes(self):
+        self.assertTrue(self.window.backup_warning.isVisible())
+        self.assertIn("Back up the drive before using this app", self.window.backup_warning.text())
+        self.window.target.setText("/tmp/volume.img")
+        self.window.inspection = {"ready": True, "changes_needed": 1, "identity": {"boot_sha256": "volume-id"}}
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=("/tmp/new-journal.sqlite", "")), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+            self.window.prepare_volume()
+        self.assertIn("Back up the drive first", question.call_args.args[2])
+
     def test_controls_do_not_collapse_at_smallest_window_size(self):
         self.window.resize(900, 780)
         self.app.processEvents()

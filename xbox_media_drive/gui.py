@@ -26,6 +26,7 @@ QMainWindow { background: #101613; }
 QLabel#title { font-size: 29px; font-weight: 700; }
 QLabel#muted { color: #a4b1a8; }
 QLabel#section { font-size: 17px; font-weight: 650; }
+QLabel#warning { color: #f3c969; font-weight: 600; }
 QLabel#busy { color: #a6e7b8; font-weight: 600; }
 QFrame#panel { border: 1px solid #2c3b31; border-radius: 12px; background: #151e18; }
 QFrame#panel QLabel, QFrame#panel QWidget { background: transparent; }
@@ -215,6 +216,10 @@ class MainWindow(QMainWindow):
         intro_layout.addWidget(label("NTFS stays NTFS", "section"))
         intro_layout.addWidget(label("Xbox media uses a normal NTFS volume. This tool adjusts app permissions and saves the "
                                      "originals. File contents and partitions stay intact; game-drive mode changes only the disk's two-byte signature.", "muted"))
+        self.backup_warning = label("Back up the drive before using this app on it. Every change is recorded and reversible, "
+                                    "but a recovery file is not a backup of your files, and a drive can fail or be unplugged "
+                                    "at the wrong moment.", "warning")
+        intro_layout.addWidget(self.backup_warning)
         layout.addWidget(intro)
 
         body = QHBoxLayout()
@@ -495,7 +500,7 @@ class MainWindow(QMainWindow):
             return
         journal_message = ("Add {} objects to journal: {}" if append else "{} objects need changes.\nRecovery journal: {}").format(
             self.inspection["changes_needed"], backup)
-        message = "Grant app access on {}?\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
+        message = "Grant app access on {}?\n\nBack up the drive first if you haven't.\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
             self.target.text(), journal_message)
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,
@@ -552,12 +557,12 @@ class MainWindow(QMainWindow):
         if target == "game":
             message = ("This Mac/PC will no longer be able to read {} until you switch it back. "
                        "If the drive was not formatted by an Xbox, the console may ask to format it, "
-                       "which erases everything on it — back up first.").format(disk)
+                       "which erases everything on it.").format(disk)
         else:
             message = ("The Xbox will not recognise {} until you switch it back. "
                        "Don't let the Xbox format it.").format(disk)
         hint = "formatted by an Xbox" if self.disk_layout["xbox_formatted"] else "not formatted by an Xbox"
-        message += "\n\nDetected layout: {}.\nBoot sector backup: {}".format(hint, backup)
+        message += "\n\nBack up the drive first if you haven't.\n\nDetected layout: {}.\nBoot sector backup: {}".format(hint, backup)
         if QMessageBox.question(self, "Switch to {} mode".format(target), message) == QMessageBox.Yes:
             self.mode_backup = backup
             self.start("switch-mode", ["mode", disk, "--set", target, "--backup", backup, "--yes"])
