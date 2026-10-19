@@ -490,37 +490,58 @@ class MainWindow(QMainWindow):
                 message += "\nApp permissions are already present."
             self.status.setText(message)
             self.log(message)
+            QApplication.alert(self)
         else:
             self.invalidate()
             if self.action == "prepare":
                 self.log("Prepared {} objects. Keep journal: {}".format(result["changed"], result["journal"]))
                 self.status.setText("Permissions prepared. Connect the drive to Xbox and choose “Use for Media”.")
+                self.report(QMessageBox.Information, "Preparation complete",
+                            "Finished preparing {}: {} objects now allow Xbox app access.\n\n"
+                            "Keep the recovery journal: {}\n\n"
+                            "You can unplug the drive, connect it to your Xbox and choose “Use for Media”.".format(
+                                self.target.text().strip(), result["changed"], result["journal"]))
             else:
                 self.log("Restored {} objects; {} already original; {} conflicts; {} missing.".format(
                     result["restored"], result["already_original"], len(result["conflicts"]), len(result["missing"])))
                 if result["state"] != "restored":
                     self.log(json.dumps({"conflicts": result["conflicts"], "missing": result["missing"]}, ensure_ascii=False))
-                    QMessageBox.warning(self, "Restoration needs review", "Some objects are missing or their permissions changed. "
-                                        "See the activity log. The journal is retained and restoration can be retried.")
+                    self.report(QMessageBox.Warning, "Restoration needs review", "Some objects are missing or their permissions "
+                                "changed. See the activity log. The journal is retained and restoration can be retried.")
                 else:
                     self.status.setText("Original recorded permissions restored. New files retain their current permissions.")
+                    self.report(QMessageBox.Information, "Restoration complete",
+                                "Finished restoring {}: {} objects restored, {} were already original.\n\n"
+                                "New files keep their current permissions.".format(
+                                    self.target.text().strip(), result["restored"], result["already_original"]))
+
+    def report(self, icon, title, message, settings=False):
+        """Show a result once the worker has finished, so the window is no longer busy behind the dialog."""
+        QApplication.alert(self)
+
+        def show():
+            # macOS hides dialog titles, so the title is also the bold headline.
+            box = QMessageBox(icon, title, title, QMessageBox.Close if settings else QMessageBox.Ok, self)
+            box.setInformativeText(message)
+            button = box.addButton("Open Privacy Settings", QMessageBox.AcceptRole) if settings else None
+            box.exec()
+            if button is not None and box.clickedButton() is button:
+                subprocess.run(["open", PRIVACY_SETTINGS])
+        self.followups.append(show)
 
     def failed(self, message):
         self.invalidate()
         self.followups = []
-        if "is no longer connected" in message:
-            self.followups.append(self.refresh_devices)
         self.log("Error: " + message)
+        disconnected = "is no longer connected" in message
         if self.action in ("prepare", "restore"):
             message += "\n\nIf preparation started, keep its recovery journal and use Restore permissions."
         if sys.platform == "darwin" and "Full Disk Access" in message:
-            box = QMessageBox(QMessageBox.Warning, "Disk access needed", message, QMessageBox.Close, self)
-            settings = box.addButton("Open Privacy Settings", QMessageBox.AcceptRole)
-            box.exec()
-            if box.clickedButton() is settings:
-                subprocess.run(["open", PRIVACY_SETTINGS])
-            return
-        QMessageBox.warning(self, "Operation could not complete", message)
+            self.report(QMessageBox.Warning, "Disk access needed", message, settings=True)
+        else:
+            self.report(QMessageBox.Warning, "Operation could not complete", message)
+        if disconnected:
+            self.followups.append(self.refresh_devices)
 
     def finished(self):
         self.worker.deleteLater()

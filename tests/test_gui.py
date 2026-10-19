@@ -3,6 +3,7 @@ import os
 import shlex
 import unittest
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -78,6 +79,20 @@ class GUITests(unittest.TestCase):
             command = helper_command(["inspect", "/dev/test"], elevate=False)
         self.assertEqual(command[1:], ["--cli", "--json", "inspect", "/dev/test"])
 
+    @contextmanager
+    def dialogs(self, on_show=None):
+        """Record result dialogs as (headline, details) instead of showing them."""
+        shown = []
+
+        def show(box):
+            shown.append((box.text(), box.informativeText()))
+            if on_show:
+                on_show(box)
+            return 0
+
+        with patch.object(QMessageBox, "exec", show):
+            yield shown
+
     def wait_for_idle(self):
         deadline = time.monotonic() + 5
         while (self.window.worker is not None or self.window.followups) and time.monotonic() < deadline:
@@ -113,7 +128,7 @@ class GUITests(unittest.TestCase):
         other = dict(device, path="/dev/disk8s1")
         with patch("xbox_media_drive.gui.unmount", return_value=device["path"]) as unmount, \
                 patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: other), SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
-                patch.object(QMessageBox, "warning") as warning:
+                self.dialogs() as dialog:
             self.window.unmount_selected()
             self.assertIsNotNone(self.window.worker)
             self.assertFalse(self.window.unmount_button.isEnabled())
@@ -123,7 +138,7 @@ class GUITests(unittest.TestCase):
         self.assertFalse(self.window.spinner.isVisible())
         self.assertEqual(self.window.busy.text(), "")
         unmount.assert_called_once_with(device["path"])
-        warning.assert_not_called()
+        self.assertEqual(dialog, [])
         self.assertEqual(self.window.selected_device()["path"], device["path"])
         self.assertFalse(self.window.selected_device()["mounted"])
         self.assertEqual(self.window.target.text(), device["path"])
@@ -142,12 +157,13 @@ class GUITests(unittest.TestCase):
                 patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(stdout=result, stderr="", returncode=0)) as helper, \
                 patch.object(QFileDialog, "getSaveFileName", return_value=(journal, "")) as save, \
                 patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, \
-                patch.object(QMessageBox, "warning") as warning:
+                self.dialogs() as dialog:
             self.window.prepare_volume()
             self.wait_for_idle()
         unmount.assert_called_once_with(device["path"])
         discover.assert_called_once()
-        warning.assert_not_called()
+        self.assertEqual([title for title, text in dialog], ["Preparation complete"])
+        self.assertIn(journal, dialog[0][1])
         save.assert_called_once()
         self.assertEqual([call.args[1] for call in question.call_args_list], ["Unmount volume", "Prepare for Xbox"])
         helper.assert_called_once()
@@ -159,10 +175,12 @@ class GUITests(unittest.TestCase):
 
     def test_recovery_journal_advice_only_follows_prepare_and_restore_errors(self):
         for action, expected in (("prepare", True), ("restore", True), ("inspect", False), ("list", False), ("unmount", False)):
-            with self.subTest(action=action), patch.object(QMessageBox, "warning") as warning:
+            with self.subTest(action=action), self.dialogs() as dialog:
                 self.window.action = action
                 self.window.failed("It broke")
-                self.assertEqual("recovery journal" in warning.call_args.args[2], expected)
+                self.assertEqual(dialog, [])
+                self.window.followups.pop(0)()
+                self.assertEqual("recovery journal" in dialog[0][1], expected)
 
     def test_mounted_target_is_unmounted_then_the_inspection_continues(self):
         self.add_device(mounted=True)
@@ -211,7 +229,25 @@ class GUITests(unittest.TestCase):
                 patch("xbox_media_drive.gui.subprocess.run", side_effect=DriveError("/dev/disk9s1 is no longer connected.")), \
                 patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
                 patch("xbox_media_drive.gui.discover", return_value=[]) as discover, \
-                patch.object(QMessageBox, "warning"):
+                self.dialogs() as dialog:
             self.window.inspect_volume()
             self.wait_for_idle()
         discover.assert_called_once()
+        self.assertEqual([title for title, text in dialog], ["Operation could not complete"])
+
+    def test_successful_restore_reports_completion_after_the_window_is_idle(self):
+        self.window.target.setText("/tmp/volume.img")
+        result = json.dumps({"state": "restored", "restored": 3, "already_original": 1, "conflicts": [], "missing": []})
+        busy = []
+
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(stdout=result, stderr="", returncode=0)), \
+                patch.object(QFileDialog, "getOpenFileName", return_value=("/tmp/journal.sqlite", "")), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes), \
+                self.dialogs(lambda box: busy.append(self.window.spinner.isVisible() or not self.window.refresh.isEnabled())) as dialog:
+            self.window.restore_volume()
+            self.wait_for_idle()
+        self.assertEqual([title for title, text in dialog], ["Restoration complete"])
+        self.assertIn("3 objects restored, 1 were already original", dialog[0][1])
+        self.assertEqual(busy, [False])
