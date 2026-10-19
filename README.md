@@ -30,8 +30,8 @@ Preparation and restoration therefore remain host-side operations on Linux/macOS
 
 Self-contained apps for **macOS 15.8 or later** are built in `dist/macos/`:
 
-- `Xbox-Media-Drive-Helper-0.1.0-arm64.dmg` for Apple silicon (M-series Macs).
-- `Xbox-Media-Drive-Helper-0.1.0-x86_64.dmg` for Intel Macs.
+- `Xbox-Media-Drive-Helper-<version>-arm64.dmg` for Apple silicon (M-series Macs).
+- `Xbox-Media-Drive-Helper-<version>-x86_64.dmg` for Intel Macs.
 
 Open the matching disk image, drag **Xbox Media Drive Helper.app** to **Applications**, then launch the installed copy. Python, Qt and NTFS-3G are bundled; no Python, Homebrew or FUSE installation is needed on those Macs. The CLI is also included inside the app. See [macOS packaging and verification](docs/macos-app.md).
 

@@ -7,6 +7,7 @@ Requires macOS, Command Line Tools, make, pkg-config and curl.
 import argparse
 import hashlib
 import json
+import re
 import os
 import platform
 import shutil
@@ -17,6 +18,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "build/macos-tools"
+# The app version is defined only in the package; the bundle and file names follow it.
+APP_VERSION = re.search(r'^__version__ = "([^"]+)"$', (ROOT / "xbox_media_drive/__init__.py").read_text(),
+                        re.MULTILINE).group(1)
 PYTHON_VERSION = "3.13.16"
 PYTHON_SHA256 = "30666509020b4da0dd8bc2e773255f34d76b7bb80b66960a928d5f6daa0192d7"
 NTFS_VERSION = "2026.9.28"
@@ -177,7 +181,7 @@ def main():
         run(["/usr/bin/arch", "-" + architecture, python, ROOT / "scripts/test-native.py", prefix,
              "--compiler-arch", platform.machine()], env=env)
         native = (prefix / "lib/libntfs-3g.dylib").resolve(strict=True)
-        build_env = dict(env, XMD_MACOS_ARCH=architecture, XMD_MACOS_NATIVE=str(native))
+        build_env = dict(env, XMD_MACOS_ARCH=architecture, XMD_MACOS_NATIVE=str(native), XMD_VERSION=APP_VERSION)
         if args.codesign_identity:
             build_env["XMD_CODESIGN_IDENTITY"] = args.codesign_identity
         run([python, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", dist / architecture,
@@ -198,11 +202,11 @@ def main():
             shutil.copyfile(ROOT / "packaging/macos/INSTALL.txt", stage / "INSTALL.txt")
             shutil.copyfile(ROOT / "packaging/macos/THIRD_PARTY_NOTICES.md", stage / "THIRD_PARTY_NOTICES.md")
             shutil.copyfile(report, stage / "verification.json")
-            image = dist / ("Xbox-Media-Drive-Helper-0.1.0-" + architecture + ".dmg")
+            image = dist / "Xbox-Media-Drive-Helper-{}-{}.dmg".format(APP_VERSION, architecture)
             run(["hdiutil", "create", "-ov", "-format", "UDZO", "-volname", "Xbox Media Drive Helper",
                  "-srcfolder", stage, image])
             run(["hdiutil", "verify", image])
-    sources = dist / "Xbox-Media-Drive-Helper-0.1.0-source.tar.gz"
+    sources = dist / "Xbox-Media-Drive-Helper-{}-source.tar.gz".format(APP_VERSION)
     source_archive(sources, ntfs_source)
     checksums = []
     for file in sorted(dist.glob("*.dmg")) + [sources]:

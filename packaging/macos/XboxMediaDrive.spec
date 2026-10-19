@@ -6,6 +6,7 @@ root = Path(SPECPATH).resolve().parent.parent
 architecture = os.environ["XMD_MACOS_ARCH"]
 native = Path(os.environ["XMD_MACOS_NATIVE"])
 identity = os.environ.get("XMD_CODESIGN_IDENTITY") or None
+version = os.environ["XMD_VERSION"]
 
 analysis = Analysis(
     [str(root / "packaging/macos/launcher.py")],
@@ -44,8 +45,8 @@ application = BUNDLE(
     icon=str(root / "build/macos-tools/AppIcon.icns"),
     bundle_identifier="org.xboxmediadrive.helper",
     info_plist={
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": version,
         "LSMinimumSystemVersion": "15.8",
         "LSApplicationCategoryType": "public.app-category.utilities",
         "NSHighResolutionCapable": True,

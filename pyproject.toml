@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xbox-media-drive-helper"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Reversible Xbox media permissions for existing NTFS volumes on Linux and macOS"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +19,9 @@ xbox-media-drive = "xbox_media_drive.cli:main"
 
 [project.gui-scripts]
 xbox-media-drive-gui = "xbox_media_drive.gui:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "xbox_media_drive.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["xbox_media_drive*"]

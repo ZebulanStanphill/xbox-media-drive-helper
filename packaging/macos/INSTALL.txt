@@ -1,4 +1,4 @@
-Xbox Media Drive Helper 0.1.0
+Xbox Media Drive Helper
 Requires macOS 15.8 or later.
 
 Choose Apple silicon (arm64) for M-series Macs, or Intel (x86_64) for Intel Macs.
