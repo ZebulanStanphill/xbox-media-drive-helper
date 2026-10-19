@@ -72,7 +72,7 @@ def discover():
                 devices.append(Device(path, info.get("VolumeName", "Unnamed volume"),
                                       info.get("TotalSize", info.get("Size", 0)),
                                       info.get("FilesystemType", node.get("Content", "unknown")),
-                                      bool(info.get("Mounted")), True))
+                                      bool(info.get("MountPoint")), True))
         return devices
     if sys.platform.startswith("linux"):
         return [Device(node["path"], node.get("label") or node["path"], int(node.get("size") or 0),
@@ -105,7 +105,7 @@ def mac_device(target):
 
 
 def require_mac_partition(info):
-    if info.get("Whole") and info.get("Content") in ("GUID_partition_scheme", "FDisk_partition_scheme"):
+    if info.get("WholeDisk") and info.get("Content") in ("GUID_partition_scheme", "FDisk_partition_scheme"):
         raise DriveError("Select the NTFS partition (for example /dev/disk4s1), not the whole disk.")
 
 
@@ -139,7 +139,7 @@ def validate_target(path):
         raise DriveError("Select an external NTFS partition or an NTFS volume image.")
     if sys.platform == "darwin":
         target, info = mac_device(target)
-        if info.get("Mounted") or info.get("MountPoint"):
+        if info.get("MountPoint"):
             raise DriveError("Unmount the selected volume first: click Unmount in this app, or run diskutil unmount {}. "
                              "Don't use Eject; it disconnects the drive.".format(target))
         require_mac_partition(info)
@@ -171,7 +171,7 @@ def is_mounted(path):
         if not re.fullmatch(r"/dev/r?disk\d+(s\d+)?", target):
             return False
         info = mac_info(target.replace("/dev/rdisk", "/dev/disk", 1))
-        return bool(info.get("Mounted") or info.get("MountPoint"))
+        return bool(info.get("MountPoint"))
     if sys.platform.startswith("linux"):
         return any(any(node.get("mountpoints") or []) for node, _ in linux_nodes()
                    if os.path.realpath(node["path"]) == target)

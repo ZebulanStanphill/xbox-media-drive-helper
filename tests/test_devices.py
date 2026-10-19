@@ -1,5 +1,6 @@
 import json
 import os
+import plistlib
 import stat
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ import subprocess
 from unittest.mock import patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.devices import identity, is_mounted, linux_nodes, unmount, validate_target
+from xbox_media_drive.devices import discover, identity, is_mounted, linux_nodes, unmount, validate_target
 from tests.test_operations import make_boot
 
 
@@ -22,6 +23,16 @@ class DeviceTests(unittest.TestCase):
             image.write_bytes(b"\0" * 512)
             with self.assertRaisesRegex(DriveError, "not an NTFS"):
                 identity(image)
+
+    def test_mac_discovery_reports_mounted_from_mount_point(self):
+        # Real diskutil plists have MountPoint ("" when unmounted) and no Mounted key.
+        listing = plistlib.dumps({"AllDisksAndPartitions": [{"DeviceIdentifier": "disk4", "Partitions": [
+            {"DeviceIdentifier": "disk4s1"}, {"DeviceIdentifier": "disk4s2"}]}]})
+        infos = {"/dev/disk4s1": {"VolumeName": "Media", "TotalSize": 1, "FilesystemType": "ntfs", "MountPoint": "/Volumes/Media"},
+                 "/dev/disk4s2": {"VolumeName": "Other", "TotalSize": 1, "FilesystemType": "ntfs", "MountPoint": ""}}
+        with patch("sys.platform", "darwin"), patch("xbox_media_drive.devices.run", return_value=listing), \
+                patch("xbox_media_drive.devices.mac_info", side_effect=infos.__getitem__):
+            self.assertEqual([device.mounted for device in discover()], [True, False])
 
     def test_linux_external_status_inherits_from_parent_disk(self):
         disk = {"path": "/dev/sdz", "type": "disk", "tran": "usb", "children": [
@@ -36,11 +47,11 @@ class DeviceTests(unittest.TestCase):
             return validate_target("/dev/disk9s1")
 
     def test_mac_refuses_internal_mounted_and_partitioned_whole_disks(self):
-        for info in ({"Internal": True}, {"Internal": False, "Mounted": True},
-                     {"Internal": False, "Whole": True, "Content": "GUID_partition_scheme"}):
+        for info in ({"Internal": True}, {"Internal": False, "MountPoint": "/Volumes/X"},
+                     {"Internal": False, "WholeDisk": True, "Content": "GUID_partition_scheme"}):
             with self.subTest(info=info), self.assertRaises(DriveError):
                 self.mac_validation(info)
-        self.assertEqual(self.mac_validation({"Internal": False, "Mounted": False}), "/dev/disk9s1")
+        self.assertEqual(self.mac_validation({"Internal": False, "MountPoint": ""}), "/dev/disk9s1")
 
     def test_attached_mac_image_is_refused(self):
         import plistlib
@@ -95,7 +106,7 @@ class DeviceTests(unittest.TestCase):
 
     def test_unmount_refuses_internal_virtual_and_partitioned_whole_disks(self):
         for info in ({"Internal": True}, {"Internal": False, "VirtualOrPhysical": "Virtual"},
-                     {"Internal": False, "Whole": True, "Content": "GUID_partition_scheme"}):
+                     {"Internal": False, "WholeDisk": True, "Content": "GUID_partition_scheme"}):
             with self.subTest(info=info), self.assertRaises(DriveError):
                 self.mac_unmount(info)
 
@@ -136,7 +147,7 @@ class DeviceTests(unittest.TestCase):
     def test_is_mounted_reads_platform_mount_state(self):
         with patch("sys.platform", "darwin"), patch.object(Path, "resolve", return_value=Path("/dev/disk9s1")), \
                 patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)):
-            for info, expected in (({"Mounted": True}, True), ({"MountPoint": "/Volumes/X"}, True), ({"Mounted": False}, False)):
+            for info, expected in (({"MountPoint": "/Volumes/X"}, True), ({"MountPoint": ""}, False), ({}, False)):
                 with self.subTest(info=info), patch("xbox_media_drive.devices.mac_info", return_value=info):
                     self.assertEqual(is_mounted("/dev/disk9s1"), expected)
         for node, expected in (({"path": "/dev/null", "mountpoints": ["/media/x"]}, True),
