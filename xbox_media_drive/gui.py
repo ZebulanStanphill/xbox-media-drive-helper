@@ -8,8 +8,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                               QListWidgetItem, QMainWindow, QMessageBox,
@@ -26,6 +26,7 @@ QMainWindow { background: #101613; }
 QLabel#title { font-size: 29px; font-weight: 700; }
 QLabel#muted { color: #a4b1a8; }
 QLabel#section { font-size: 17px; font-weight: 650; }
+QLabel#busy { color: #a6e7b8; font-weight: 600; }
 QFrame#panel { border: 1px solid #2c3b31; border-radius: 12px; background: #151e18; }
 QFrame#panel QLabel, QFrame#panel QWidget { background: transparent; }
 QPushButton { background: #233027; border: 1px solid #3a4c40; border-radius: 7px; padding: 10px 15px; font-weight: 600; }
@@ -140,6 +141,46 @@ def app_icon():
     except ImportError:
         pass
     return icon
+
+
+class Spinner(QWidget):
+    """A rotating arc shown while an operation runs. It keeps its space when hidden so the layout stays put."""
+
+    def __init__(self, size=22):
+        super().__init__()
+        self.setFixedSize(size, size)
+        policy = self.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.setSizePolicy(policy)
+        self.angle = 0
+        self.timer = QTimer(self)
+        self.timer.setInterval(40)
+        self.timer.timeout.connect(self.step)
+        self.hide()
+
+    def start(self):
+        self.show()
+        self.timer.start()
+
+    def stop(self):
+        self.timer.stop()
+        self.hide()
+
+    def step(self):
+        self.angle = (self.angle + 15) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        pen = QPen(QColor("#29362d"), 3)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+        pen.setColor(QColor("#98e5ad"))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(rect, -self.angle * 16, 100 * 16)
 
 
 class MainWindow(QMainWindow):
@@ -269,6 +310,14 @@ class MainWindow(QMainWindow):
         body.addLayout(right, 3)
         layout.addLayout(body, 1)
 
+        busy_row = QHBoxLayout()
+        busy_row.setSpacing(10)
+        self.spinner = Spinner()
+        busy_row.addWidget(self.spinner)
+        self.busy = label("", "busy")
+        self.busy.setTextFormat(Qt.PlainText)
+        busy_row.addWidget(self.busy, 1)
+        layout.addLayout(busy_row)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 1)
@@ -395,11 +444,16 @@ class MainWindow(QMainWindow):
             control.setEnabled(False)
         self.progress.setRange(0, 0)
         if listing:
-            self.log("Finding external volumes…")
+            text = "Finding external volumes…"
         elif unmount:
-            self.log("Unmounting {}…".format(unmount))
+            text = "Unmounting {}…".format(unmount)
         else:
-            self.log("{}: waiting for authorization or processing the volume…".format(action.capitalize()))
+            text = "{} {}… Enter your administrator password if asked.".format(
+                {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on"}[action],
+                self.target.text().strip())
+        self.log(text)
+        self.busy.setText(text)
+        self.spinner.start()
         self.worker.start()
 
     def completed(self, result):
@@ -475,6 +529,8 @@ class MainWindow(QMainWindow):
             control.setEnabled(True)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
+        self.spinner.stop()
+        self.busy.setText("")
         self.update_unmount_button()
         while self.followups and self.worker is None:
             self.followups.pop(0)()
