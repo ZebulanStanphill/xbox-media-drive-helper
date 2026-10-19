@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from . import DriveError, __version__
 from .devices import identity, require_host_backup, validate_target
 from .native import Volume
-from .security import grant, lost_auto_inherited, signature
+from .security import Descriptor, grant, lost_auto_inherited, signature
 
 
 def inspect(target, access="modify", library=None, volume_factory=Volume):
@@ -16,20 +16,25 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
     info = identity(target)
     total = changes = directories = 0
     blockers = []
+    previously_prepared = False
     with volume_factory(target, library=library) as volume:
         for entry in volume.walk():
             raw = volume.get(entry.path)
             total += 1
             directories += entry.directory
             try:
-                changes += signature(grant(raw, entry.directory, access)) != signature(raw)
+                needs_change = signature(grant(raw, entry.directory, access)) != signature(raw)
+                changes += needs_change
+                if entry.path == "/":
+                    previously_prepared = bool(Descriptor.parse(raw).dacl) and not needs_change
             except DriveError as exc:
                 if len(blockers) < 30:
                     blockers.append({"path": entry.path, "reason": str(exc)})
         skipped = volume.skipped
         system_skipped = getattr(volume, "system_skipped", [])
     return {"target": target, "identity": info, "objects": total, "directories": directories,
-            "changes_needed": changes, "access": access, "blockers": blockers,
+            "changes_needed": changes, "previously_prepared": previously_prepared,
+            "access": access, "blockers": blockers,
             "skipped_reparse_points": skipped, "skipped_system_paths": system_skipped, "ready": not blockers}
 
 
@@ -80,50 +85,85 @@ def get_meta(db, key):
 
 
 def prepare(target, backup, access="modify", library=None, progress=lambda value: None, volume_factory=Volume,
-            expected_boot=None):
+            expected_boot=None, append=False):
     target = validate_target(target)
     info = identity(target)
     if expected_boot is not None and info["boot_sha256"] != expected_boot:
         raise DriveError("The selected volume no longer matches the inspection. Inspect the drive again before preparing.")
     backup = require_host_backup(backup, target)
     changed = 0
-    with journal(backup, create=True) as db:
-        put_meta(db, "format", 1)
-        put_meta(db, "identity", info)
+    with journal(backup, create=not append) as db:
+        if append:
+            if get_meta(db, "format") != 1:
+                raise DriveError("Unsupported recovery journal version.")
+            if get_meta(db, "identity") != info:
+                raise DriveError("This recovery journal belongs to a different NTFS volume. No permissions changed.")
+            state = get_meta(db, "state")
+            if state.startswith("restor"):
+                raise DriveError("This journal was already used to restore the drive. Prepare with a new journal.")
+            if state not in ("prepared", "interrupted", "applying", "planning"):
+                raise DriveError("This journal cannot be used to prepare the drive in its current state.")
+            put_meta(db, "updated", datetime.now(timezone.utc).isoformat())
+        else:
+            put_meta(db, "format", 1)
+            put_meta(db, "identity", info)
+            put_meta(db, "created", datetime.now(timezone.utc).isoformat())
+            put_meta(db, "access", access)
         put_meta(db, "tool_version", __version__)
-        put_meta(db, "created", datetime.now(timezone.utc).isoformat())
-        put_meta(db, "access", access)
         put_meta(db, "state", "planning")
         try:
             with volume_factory(target, writable=True, library=library) as volume:
                 if identity(target) != info:
                     raise DriveError("The target volume changed while opening it. No permissions changed.")
                 # Complete preflight and journal every proposed change BEFORE writing any ACL.
+                paths = {}
                 for entry in volume.walk():
+                    paths[str(entry.reference)] = entry.path
                     raw = volume.get(entry.path)
                     try:
                         desired = grant(raw, entry.directory, access)
                     except DriveError as exc:
                         raise DriveError("{}: {}".format(entry.path, exc)) from exc
                     if signature(desired) != signature(raw):
-                        db.execute("INSERT INTO entries(reference,path,original,prepared) VALUES (?,?,?,?)",
-                                   (str(entry.reference), entry.path, raw, desired))
+                        row = db.execute("SELECT * FROM entries WHERE reference=?",
+                                         (str(entry.reference),)).fetchone() if append else None
+                        if row is None:
+                            db.execute("INSERT INTO entries(reference,path,original,prepared) VALUES (?,?,?,?)",
+                                       (str(entry.reference), entry.path, raw, desired))
+                        elif not row["applied"] and signature(raw) == signature(row["original"]):
+                            if signature(desired) != signature(row["prepared"]):
+                                raise DriveError("{}: recorded in this journal with a different access level. "
+                                                 "Prepare with a new journal.".format(entry.path))
+                        else:
+                            raise DriveError("{}: its permissions changed since this journal recorded it. "
+                                             "Prepare with a new journal.".format(entry.path))
                 db.commit()
                 put_meta(db, "skipped", volume.skipped)
                 put_meta(db, "skipped_system_paths", getattr(volume, "system_skipped", []))
                 put_meta(db, "state", "applying")
-                count = db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
-                for row in db.execute("SELECT * FROM entries ORDER BY rowid"):
+                pending = " WHERE applied=0" if append else ""
+                count = db.execute("SELECT COUNT(*) FROM entries" + pending).fetchone()[0]
+                for index, row in enumerate(db.execute("SELECT * FROM entries" + pending + " ORDER BY rowid")):
+                    # Rows left pending by an interrupted run may since have been renamed or deleted;
+                    # use the current path, and leave deleted objects for restore to report as missing.
+                    path = paths.get(row["reference"])
+                    if path is None:
+                        continue
                     # Persisted original already exists even if write or verification fails.
-                    if signature(volume.get(row["path"])) != signature(row["original"]):
-                        raise DriveError("Permissions changed during preflight: {}".format(row["path"]))
-                    volume.set(row["path"], row["prepared"])
-                    if signature(volume.get(row["path"])) != signature(row["prepared"]):
-                        raise DriveError("Permission verification failed for {}".format(row["path"]))
+                    current = signature(volume.get(path))
+                    prepared = signature(row["prepared"])
+                    if append and (current == prepared or lost_auto_inherited(current, prepared)):
+                        pass  # A prior run wrote this ACL but did not mark it durably.
+                    elif current == signature(row["original"]):
+                        volume.set(path, row["prepared"])
+                        if signature(volume.get(path)) != prepared:
+                            raise DriveError("Permission verification failed for {}".format(path))
+                        changed += 1
+                    else:
+                        raise DriveError("Permissions changed during preflight: {}".format(path))
                     db.execute("UPDATE entries SET applied=1 WHERE reference=?", (row["reference"],))
                     db.commit()
-                    changed += 1
-                    progress({"completed": changed, "total": count, "path": row["path"]})
+                    progress({"completed": index + 1, "total": count, "path": path})
             # Complete means the volume was also successfully flushed/closed.
             put_meta(db, "state", "prepared")
         except BaseException:
@@ -133,7 +173,7 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
             except sqlite3.Error:
                 pass
             raise
-    return {"target": target, "changed": changed, "journal": backup, "state": "prepared"}
+    return {"target": target, "changed": changed, "journal": backup, "state": "prepared", "appended": append}
 
 
 def restore(target, backup, library=None, progress=lambda value: None, volume_factory=Volume):

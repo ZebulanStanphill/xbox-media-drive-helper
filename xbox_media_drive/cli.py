@@ -32,6 +32,8 @@ def parser():
                              help="modify: read/write/delete; full: also change permissions/owner")
         if command == "prepare":
             cmd.add_argument("--expect-volume", help="Require this boot_sha256 from a previous inspection")
+            cmd.add_argument("--append", action="store_true",
+                             help="Add newly found objects to an existing journal from preparation of this drive")
         if command != "inspect":
             cmd.add_argument("--backup", required=True, help="Host-side SQLite recovery journal")
             cmd.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
@@ -57,8 +59,11 @@ def main(argv=None):
             if args.command in ("prepare", "restore") and not args.yes:
                 if not sys.stdin.isatty():
                     raise DriveError("Pass --yes after checking the target with inspect.")
-                print("{} permissions on {} using journal {}.".format(args.command.capitalize(), args.target, args.backup),
-                      file=sys.stderr)
+                if args.command == "prepare" and args.append:
+                    message = "Prepare permissions on {} and add to journal {}.".format(args.target, args.backup)
+                else:
+                    message = "{} permissions on {} using journal {}.".format(args.command.capitalize(), args.target, args.backup)
+                print(message, file=sys.stderr)
                 print("Type the complete target path to confirm: ", end="", file=sys.stderr, flush=True)
                 if input() != args.target:
                     raise DriveError("Confirmation did not match; no permissions changed.")
@@ -73,7 +78,7 @@ def main(argv=None):
                 result = inspect(args.target, args.access, args.library)
             elif args.command == "prepare":
                 result = prepare(args.target, args.backup, args.access, args.library, progress,
-                                 expected_boot=args.expect_volume)
+                                 expected_boot=args.expect_volume, append=args.append)
             else:
                 result = restore(args.target, args.backup, args.library, progress)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))

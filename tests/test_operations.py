@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.native import Entry
-from xbox_media_drive.operations import inspect, journal_info, prepare, restore
+from xbox_media_drive.operations import inspect, journal, journal_info, prepare, put_meta, restore
 from xbox_media_drive.security import grant, signature
 from tests.test_security import ace, descriptor
 
@@ -74,8 +74,8 @@ class OperationTests(unittest.TestCase):
         self.validation.stop()
         self.temp.cleanup()
 
-    def prepare(self):
-        return prepare(self.target, self.backup, volume_factory=self.volume)
+    def prepare(self, **kwargs):
+        return prepare(self.target, self.backup, volume_factory=self.volume, **kwargs)
 
     def restore(self):
         return restore(self.target, self.backup, volume_factory=self.volume)
@@ -83,8 +83,12 @@ class OperationTests(unittest.TestCase):
     def test_read_only_inspection_and_round_trip(self):
         info = inspect(self.target, volume_factory=self.volume)
         self.assertEqual(info["changes_needed"], 3)
+        self.assertFalse(info["previously_prepared"])
         self.assertEqual(self.volume.writes, 0)
-        self.assertEqual(self.prepare()["changed"], 3)
+        result = self.prepare()
+        self.assertEqual(result["changed"], 3)
+        self.assertFalse(result["appended"])
+        self.assertTrue(inspect(self.target, volume_factory=self.volume)["previously_prepared"])
         self.assertEqual(os.stat(self.backup).st_mode & 0o777, 0o600)
         self.assertEqual(self.restore()["restored"], 3)
         for path in self.original:
@@ -99,6 +103,165 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(self.restore()["restored"], 2)
         for path in self.original:
             self.assertEqual(signature(self.volume.get(path)), self.original[path])
+
+    def test_null_or_absent_root_dacl_is_not_previously_prepared(self):
+        for control in (0x8000, 0x8004):
+            with self.subTest(control=control):
+                self.volume.files["/"][2] = struct.pack("<BBHIIII", 1, 0, control, 0, 0, 0, 0)
+                self.assertFalse(inspect(self.target, volume_factory=self.volume)["previously_prepared"])
+
+    def test_previously_prepared_uses_requested_access(self):
+        self.prepare()
+        self.assertFalse(inspect(self.target, access="full", volume_factory=self.volume)["previously_prepared"])
+
+    def test_append_only_new_objects_and_one_journal_restores_everything(self):
+        self.prepare()
+        metadata = journal_info(self.backup)
+        later = descriptor([ace(mask=1)])
+        self.volume.files["/Movies/later.mkv"] = [72, False, later]
+        info = inspect(self.target, volume_factory=self.volume)
+        self.assertTrue(info["previously_prepared"])
+        self.assertEqual(info["changes_needed"], 1)
+        result = self.prepare(append=True)
+        self.assertTrue(result["appended"])
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(self.volume.writes, 4)
+        appended = journal_info(self.backup)
+        for key in ("created", "access", "format", "identity"):
+            self.assertEqual(appended[key], metadata[key])
+        self.assertIn("updated", appended)
+        self.assertEqual(appended["entries"], 4)
+        self.assertEqual(inspect(self.target, volume_factory=self.volume)["changes_needed"], 0)
+        self.assertEqual(self.prepare(append=True)["changed"], 0)
+        self.assertEqual(self.restore()["restored"], 4)
+        for path, original in self.original.items():
+            self.assertEqual(signature(self.volume.get(path)), original)
+        self.assertEqual(signature(self.volume.get("/Movies/later.mkv")), signature(later))
+
+    def test_append_rejects_wrong_volume_before_opening(self):
+        self.prepare()
+        Path(self.target).write_bytes(make_boot(b"87654321"))
+        with patch("xbox_media_drive.operations.Volume") as factory:
+            with self.assertRaisesRegex(DriveError, "different NTFS volume"):
+                prepare(self.target, self.backup, append=True, volume_factory=factory)
+            factory.assert_not_called()
+        self.assertEqual(self.volume.writes, 3)
+
+    def test_append_rejects_restoration_states_and_invalid_metadata(self):
+        self.prepare()
+        for state in ("restoring", "restored", "restore-incomplete", "restore-interrupted", "unknown"):
+            with self.subTest(state=state), journal(self.backup) as db:
+                put_meta(db, "state", state)
+                with self.assertRaisesRegex(DriveError, "already used to restore" if state.startswith("restor") else "current state"):
+                    self.prepare(append=True)
+        with journal(self.backup) as db:
+            put_meta(db, "format", 2)
+        with self.assertRaisesRegex(DriveError, "Unsupported recovery journal"):
+            self.prepare(append=True)
+        self.assertEqual(self.volume.writes, 3)
+
+    def test_append_requires_existing_journal(self):
+        with self.assertRaisesRegex(DriveError, "existing recovery journal"):
+            self.prepare(append=True)
+        self.assertFalse(Path(self.backup).exists())
+
+    def test_append_journals_all_new_objects_durably_before_first_write(self):
+        self.prepare()
+        for ref in (72, 73):
+            self.volume.files["/{}.mkv".format(ref)] = [ref, False, descriptor([ace()])]
+        write = self.volume.set
+
+        def check_journal_then_write(path, raw):
+            with sqlite3.connect(self.backup) as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM entries").fetchone()[0], 5)
+                row = db.execute("SELECT original,prepared FROM entries WHERE path=?", (path,)).fetchone()
+            self.assertEqual(signature(row[0]), signature(self.volume.get(path)))
+            self.assertEqual(signature(row[1]), signature(raw))
+            write(path, raw)
+
+        with patch.object(self.volume, "set", side_effect=check_journal_then_write):
+            self.assertEqual(self.prepare(append=True)["changed"], 2)
+
+    def test_append_rechecks_current_permissions_before_writing(self):
+        self.prepare()
+        self.volume.files["/new.mkv"] = [72, False, descriptor([ace()])]
+        walk = self.volume.walk
+
+        def changed_after_walk():
+            yield from walk()
+            self.volume.files["/new.mkv"][2] = descriptor([ace(mask=1)])
+
+        with patch.object(self.volume, "walk", side_effect=changed_after_walk):
+            with self.assertRaisesRegex(DriveError, "Permissions changed during preflight: /new.mkv"):
+                self.prepare(append=True)
+        self.assertEqual(self.volume.writes, 3)
+
+    def test_append_rejects_changed_recorded_object_before_any_writes(self):
+        self.prepare()
+        self.volume.files["/new.mkv"] = [72, False, descriptor([ace()])]
+        self.volume.files["/Movies/film.mkv"] = self.volume.files.pop("/Movies/film.mkv")
+        self.volume.files["/Movies/film.mkv"][2] = descriptor([ace(mask=1)])
+        with self.assertRaisesRegex(DriveError, "permissions changed since this journal recorded it"):
+            self.prepare(append=True)
+        self.assertEqual(self.volume.writes, 3)
+        self.assertEqual(signature(self.volume.get("/new.mkv")), signature(descriptor([ace()])))
+
+    def test_interrupted_append_resumes_unmarked_write_and_unwritten_rows(self):
+        self.prepare()
+        for ref in (72, 73):
+            self.volume.files["/{}.mkv".format(ref)] = [ref, False, descriptor([ace()])]
+        self.volume.fail_at = 4
+        with self.assertRaisesRegex(DriveError, "interruption"):
+            self.prepare(append=True)
+        self.assertEqual(journal_info(self.backup)["state"], "interrupted")
+        with sqlite3.connect(self.backup) as db:
+            self.assertEqual(db.execute("SELECT SUM(applied) FROM entries").fetchone()[0], 3)
+        progress = []
+        result = self.prepare(append=True, progress=progress.append)
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(self.volume.writes, 5)
+        self.assertEqual([p["completed"] for p in progress], [1, 2])
+        with sqlite3.connect(self.backup) as db:
+            self.assertEqual(db.execute("SELECT SUM(applied) FROM entries").fetchone()[0], 5)
+        self.assertEqual(self.restore()["restored"], 5)
+
+    def test_interrupted_append_resumes_renamed_rows_and_skips_deleted_ones(self):
+        self.prepare()
+        for ref in (72, 73):
+            self.volume.files["/{}.mkv".format(ref)] = [ref, False, descriptor([ace()])]
+        self.volume.fail_at = 4
+        with self.assertRaisesRegex(DriveError, "interruption"):
+            self.prepare(append=True)
+        # The interrupted run wrote /72.mkv; /73.mkv is still pending. Both change before the retry.
+        del self.volume.files["/72.mkv"]
+        self.volume.files["/Movies/renamed.mkv"] = self.volume.files.pop("/73.mkv")
+        self.assertEqual(self.prepare(append=True)["changed"], 1)
+        self.assertEqual(inspect(self.target, volume_factory=self.volume)["changes_needed"], 0)
+        result = self.restore()
+        self.assertEqual(result["missing"], ["/72.mkv"])
+        self.assertEqual(signature(self.volume.get("/Movies/renamed.mkv")), signature(descriptor([ace()])))
+
+    def test_append_pending_row_rejects_different_access(self):
+        with patch.object(self.volume, "set", side_effect=DriveError("interrupted before write")):
+            with self.assertRaises(DriveError):
+                self.prepare()
+        with self.assertRaisesRegex(DriveError, "different access level"):
+            self.prepare(append=True, access="full")
+        self.assertEqual(self.volume.writes, 0)
+
+    def test_append_marks_legacy_unmarked_write_without_rewriting(self):
+        self.prepare()
+        with journal(self.backup) as db:
+            row = db.execute("SELECT * FROM entries WHERE path='/'").fetchone()
+            raw = row["prepared"]
+            control = struct.unpack_from("<H", raw, 2)[0]
+            prepared = raw[:2] + struct.pack("<H", control | 0x0400) + raw[4:]
+            db.execute("UPDATE entries SET prepared=?, applied=0 WHERE path='/'", (prepared,))
+            db.commit()
+        self.assertEqual(self.prepare(append=True)["changed"], 0)
+        self.assertEqual(self.volume.writes, 3)
+        with sqlite3.connect(self.backup) as db:
+            self.assertEqual(db.execute("SELECT applied FROM entries WHERE path='/'").fetchone()[0], 1)
 
     def test_all_preflight_completes_before_first_acl_write(self):
         self.volume.files["/Movies/film.mkv"][2] = descriptor([ace(kind=1)])

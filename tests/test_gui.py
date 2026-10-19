@@ -53,6 +53,68 @@ class GUITests(unittest.TestCase):
         self.assertFalse(self.window.prepare_button.isEnabled())
         self.assertIn("deny ACE", self.window.status.text())
 
+    def test_previously_prepared_inspection_explains_later_copies(self):
+        self.window.action = "inspect"
+        result = {"ready": True, "objects": 10, "changes_needed": 2, "previously_prepared": True,
+                  "skipped_reparse_points": [], "blockers": []}
+        self.window.completed(result)
+        for message in (self.window.status.text(), self.window.activity.toPlainText()):
+            self.assertIn("2 objects don't have app access yet", message)
+            self.assertIn("Mac or Linux", message)
+            self.assertIn("Prepare again", message)
+        self.window.completed(dict(result, changes_needed=0))
+        self.assertIn("App permissions are already present.", self.window.status.text())
+
+    def test_previously_prepared_journal_choices(self):
+        for choice in ("Add to Existing Journal…", "New Journal…", "Cancel"):
+            with self.subTest(choice=choice):
+                self.window.target.setText("/tmp/volume.img")
+                self.window.inspection = {"ready": True, "changes_needed": 2, "previously_prepared": True,
+                                          "identity": {"boot_sha256": "volume-id"}}
+                chosen = []
+
+                def choose(box):
+                    self.assertEqual(box.defaultButton().text(), "Add to Existing Journal…")
+                    self.assertIn("single journal that restores everything", box.informativeText())
+                    chosen.append(next(button for button in box.buttons() if button.text() == choice))
+                    return 0
+
+                journal = "/tmp/existing.sqlite" if choice.startswith("Add") else "/tmp/new.sqlite"
+                with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                        patch.object(QMessageBox, "exec", choose), \
+                        patch.object(QMessageBox, "clickedButton", side_effect=lambda: chosen[-1]), \
+                        patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, \
+                        patch.object(QFileDialog, "getOpenFileName", return_value=(journal, "")) as open_file, \
+                        patch.object(QFileDialog, "getSaveFileName", return_value=(journal, "")) as save_file, \
+                        patch.object(self.window, "start") as start:
+                    self.window.prepare_volume()
+                if choice == "Cancel":
+                    start.assert_not_called()
+                    open_file.assert_not_called()
+                    save_file.assert_not_called()
+                    continue
+                arguments = start.call_args.args[1]
+                self.assertEqual(arguments[arguments.index("--backup") + 1], journal)
+                self.assertEqual("--append" in arguments, choice.startswith("Add"))
+                if choice.startswith("Add"):
+                    open_file.assert_called_once()
+                    save_file.assert_not_called()
+                    self.assertIn("Add 2 objects to journal: " + journal, question.call_args.args[2])
+                else:
+                    save_file.assert_called_once()
+                    open_file.assert_not_called()
+
+    def test_append_completion_explains_existing_journal_and_future_files(self):
+        self.window.action = "prepare"
+        with self.dialogs() as dialog:
+            self.window.completed({"changed": 2, "journal": "/tmp/existing.sqlite", "appended": True})
+            self.window.followups.pop(0)()
+        self.assertEqual(dialog[0][0], "Objects added to existing journal")
+        self.assertIn("to the existing journal. They now allow Xbox app access", dialog[0][1])
+        self.assertIn("Mac or Linux PC won't have app access", dialog[0][1])
+        self.assertIn("Files copied in Windows inherit access automatically", dialog[0][1])
+        self.assertIn("Added 2 objects", self.window.status.text())
+
     def test_controls_do_not_collapse_at_smallest_window_size(self):
         self.window.resize(900, 780)
         self.app.processEvents()
@@ -164,6 +226,7 @@ class GUITests(unittest.TestCase):
         discover.assert_called_once()
         self.assertEqual([title for title, text in dialog], ["Preparation complete"])
         self.assertIn(journal, dialog[0][1])
+        self.assertIn("inspect and prepare it again", dialog[0][1])
         save.assert_called_once()
         self.assertEqual([call.args[1] for call in question.call_args_list], ["Unmount volume", "Prepare for Xbox"])
         helper.assert_called_once()
@@ -172,6 +235,36 @@ class GUITests(unittest.TestCase):
         self.assertEqual(command[command.index("--backup") + 1], journal)
         self.assertEqual(command[command.index("--expect-volume") + 1], "volume-id")
         self.assertIn("Permissions prepared", self.window.status.text())
+
+    def test_mounted_previously_prepared_target_resumes_journal_choice_after_unmount(self):
+        device = self.add_device(mounted=True)
+        self.window.inspection = {"ready": True, "changes_needed": 1, "previously_prepared": True,
+                                  "identity": {"boot_sha256": "volume-id"}}
+        journal = "/tmp/existing.sqlite"
+        result = json.dumps({"changed": 1, "journal": journal, "appended": True})
+        selected = []
+
+        def choose(box):
+            if box.text() == "Choose a recovery journal":
+                selected.append(box.defaultButton())
+            return 0
+
+        with patch("xbox_media_drive.gui.is_mounted", side_effect=[True, False]), \
+                patch("xbox_media_drive.gui.unmount", return_value=device["path"]) as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
+                patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(stdout=result, stderr="", returncode=0)) as helper, \
+                patch.object(QMessageBox, "exec", choose), \
+                patch.object(QMessageBox, "clickedButton", side_effect=lambda: selected[-1]), \
+                patch.object(QFileDialog, "getOpenFileName", return_value=(journal, "")) as open_file, \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            self.window.prepare_volume()
+            self.wait_for_idle()
+        unmount.assert_called_once_with(device["path"])
+        open_file.assert_called_once()
+        self.assertEqual(len(selected), 1)
+        self.assertIn("--append", helper.call_args.args[0])
+        self.assertIn(journal, helper.call_args.args[0])
 
     def test_recovery_journal_advice_only_follows_prepare_and_restore_errors(self):
         for action, expected in (("prepare", True), ("restore", True), ("inspect", False), ("list", False), ("unmount", False)):

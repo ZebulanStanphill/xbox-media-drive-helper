@@ -117,6 +117,29 @@ class NativeImageTests(unittest.TestCase):
                 self.assertEqual(signature(volume.get(path)), value)
         self.assertEqual(self.tool("ntfscat", self.image, "/movie.mkv"), self.payload)
 
+    def test_append_grants_later_ntfs3g_file_and_single_journal_restores_all(self):
+        with ImageVolume(self.image, library=self.library) as volume:
+            originals = {entry.path: signature(volume.get(entry.path)) for entry in volume.walk()}
+        prepare(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
+        source = Path(self.temp.name) / "later.bin"
+        source.write_bytes(self.payload)
+        self.tool("ntfscp", self.image, str(source), "/Media/added-later.mkv")
+        with ImageVolume(self.image, library=self.library) as volume:
+            originals["/Media/added-later.mkv"] = signature(volume.get("/Media/added-later.mkv"))
+        info = self.inspect()
+        self.assertTrue(info["previously_prepared"])
+        self.assertEqual(info["changes_needed"], 1)
+        result = prepare(self.image, self.backup, append=True, library=self.library, volume_factory=ImageVolume)
+        self.assertTrue(result["appended"])
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(self.inspect()["changes_needed"], 0)
+        self.assertEqual(restore(self.image, self.backup, library=self.library,
+                                 volume_factory=ImageVolume)["state"], "restored")
+        with ImageVolume(self.image, library=self.library) as volume:
+            for entry in volume.walk():
+                self.assertEqual(signature(volume.get(entry.path)), originals[entry.path], entry.path)
+        self.assertEqual(self.tool("ntfscat", self.image, "/Media/added-later.mkv"), self.payload)
+
     def windows_like(self):
         """Give every object SE_DACL_AUTO_INHERITED, as Windows-formatted volumes have; mkntfs leaves it clear."""
         with ImageVolume(self.image, writable=True, library=self.library) as volume:

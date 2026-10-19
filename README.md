@@ -82,11 +82,12 @@ Use `--library /absolute/path/to/libntfs-3g.dylib` (macOS) or `.so` (Linux) befo
 ```
 
 1. Select the external NTFS partition, or open a raw NTFS volume image.
-2. Click **Unmount** to unmount it (inspecting a mounted volume also offers to). Do not use Eject or the OS's eject button: that disconnects the drive. If you already ejected it, unplug and reconnect it, then click **Refresh drives**.
-3. Click **Inspect permissions**. This is a read-only scan.
+2. Click **Unmount** (inspecting a mounted volume also offers to). Do not use Eject or the OS's eject button: that disconnects the drive. If you already ejected it, unplug and reconnect it, then click **Refresh drives**.
+3. Click **Inspect permissions** (read-only).
 4. Click **Prepare for Xbox**, save a new recovery journal on your computer, and confirm the displayed target.
-5. When complete, connect it to Xbox and choose **Use for Media**.
-6. To reverse the operation, reconnect the drive, click **Unmount**, open **Restore permissions**, and select its original journal.
+5. If you copy files to the drive from macOS or Linux after preparing it, Inspect again, then click **Prepare for Xbox** again and choose **Add to Existing Journal** (recommended), selecting the journal from step 4. Files created on Windows inherit the grant and need no extra step.
+6. When complete, connect it to Xbox and choose **Use for Media**.
+7. To reverse the operation, reconnect the drive, click **Unmount**, open **Restore permissions**, and select the journal.
 
 The UI stays unprivileged. macOS shows its standard administrator prompt for the separate CLI helper. Linux uses `pkexec` and needs a working PolicyKit authentication agent; install your distribution's polkit package if necessary. If graphical authorization is unavailable, use the CLI with `sudo`. NTFS-3G requires UID 0 even for image-file inspections. Journals created by the helper are root-owned, mode `0600`; restore through the app or inspect/copy them with `sudo`.
 
@@ -110,15 +111,26 @@ udisksctl unmount -b /dev/sdb1
 diskutil unmount /dev/disk4s1
 ```
 
-Inspect, prepare, then restore:
+Inspect, then prepare:
 
 ```sh
 sudo .venv/bin/xbox-media-drive inspect /dev/disk4s1
 sudo .venv/bin/xbox-media-drive prepare /dev/disk4s1 --backup "$PWD/media-original.sqlite"
+```
+
+After copying files to the drive from macOS or Linux, inspect and prepare again, appending to the same journal so one journal restores everything:
+
+```sh
+sudo .venv/bin/xbox-media-drive prepare /dev/disk4s1 --append --backup "$PWD/media-original.sqlite"
+```
+
+To restore the recorded permissions after the initial preparation and any appends:
+
+```sh
 sudo .venv/bin/xbox-media-drive restore /dev/disk4s1 --backup "$PWD/media-original.sqlite"
 ```
 
-Writes require typing the target path, or explicit `--yes` for automation. The journal must be a **new file** for preparation; an existing journal is never overwritten. Both operations verify every changed descriptor. `--access full` selects Full control for apps that need it. `prepare --expect-volume SHA256` requires the `boot_sha256` returned by an earlier inspection; the GUI always supplies it to detect a swapped drive or a reused device path.
+Writes require typing the target path, or explicit `--yes` for automation. Without `--append`, the journal must be a **new file**; an existing journal is never overwritten. `--append` instead adds the new objects to an existing journal for the same drive, provided it has not been used for restoration. Both operations verify every changed descriptor. `--access full` selects Full control for apps that need it. `prepare --expect-volume SHA256` requires the `boot_sha256` returned by an earlier inspection; the GUI always supplies it to detect a swapped drive or a reused device path.
 
 ```sh
 sudo .venv/bin/xbox-media-drive --json inspect /dev/sdb1
@@ -136,8 +148,8 @@ sudo .venv/bin/xbox-media-drive journal /home/me/media.sqlite
 - **Durable journal.** Each original and proposed security descriptor is stored in a host-side SQLite journal before changes. Full synchronous commits, and full filesystem sync on macOS, protect the journal. Interrupted operations retain the journal; restore checks actual NTFS descriptors instead of trusting possibly stale progress flags.
 - **Restore matches the volume and file identity.** Boot-sector fingerprint and NTFS volume serial prevent using the wrong journal. Files are matched by their MFT record **and sequence number**, so renamed files can be restored and reused/deleted records are not mistaken for the original files. Byte-identical cloned volumes share these identifiers; choose the intended physical drive yourself.
 - **Later edits are preserved.** If an object's current descriptor differs from both the recorded original and the prepared descriptor, restore reports a conflict. Missing objects are reported. It restores other matching objects, retains the journal, and returns exit code `3` for follow-up. Retrying restore is safe.
-- **The journal is the only way back.** Automatic restoration needs the journal saved at preparation. If it is lost, remove the **ALL APPLICATION PACKAGES** entries manually in Windows (Security tab, or `icacls`).
-- **New files retain current ACLs.** Files created after preparation have no recorded original descriptor. Their inherited app grant is left in place. This does not change the filesystem type: the drive remains standard NTFS throughout.
+- **The journal is the only way back.** Automatic restoration needs the journal used for preparation, including any appended later. If it is lost, remove the **ALL APPLICATION PACKAGES** entries manually in Windows (Security tab, or `icacls`).
+- **Files copied from macOS or Linux need re-preparation.** NTFS-3G does not apply the inherited app grant to files it creates, so files copied after preparation lack it until you Inspect and prepare again with **Add to Existing Journal** (or `prepare --append`). Files created on Windows inherit the grant automatically. This does not change the filesystem type: the drive remains standard NTFS throughout.
 
 A journal reverses this tool's recorded permission changes, not unknown changes made by another utility. If your drive already has Xbox app permissions, inspection reports that; the tool cannot reconstruct permissions from before its first use. It never runs repair, clears hibernation, or enables a force/recovery mount. Fully shut down Windows and check the filesystem there if NTFS-3G refuses a writable session.
 

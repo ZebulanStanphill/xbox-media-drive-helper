@@ -46,3 +46,18 @@ class CLITests(unittest.TestCase):
         status, output, error = self.call(["--json", "--library", "untrusted.so", "doctor"])
         self.assertEqual(status, 1)
         self.assertIn("absolute", error)
+
+    def test_append_passed_through(self):
+        for append in (False, True):
+            with self.subTest(append=append), patch("xbox_media_drive.cli.prepare", return_value={}) as prepare:
+                arguments = ["prepare", "/dev/test", "--backup", "b.sqlite", "--yes"]
+                status, _, _ = self.call(arguments + (["--append"] if append else []))
+                self.assertEqual(status, 0)
+                self.assertEqual(prepare.call_args.kwargs["append"], append)
+
+    def test_append_confirmation_describes_existing_journal(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="/dev/test"), \
+                patch("xbox_media_drive.cli.prepare", return_value={}):
+            status, _, error = self.call(["prepare", "/dev/test", "--backup", "b.sqlite", "--append"])
+        self.assertEqual(status, 0)
+        self.assertIn("add to journal b.sqlite", error)

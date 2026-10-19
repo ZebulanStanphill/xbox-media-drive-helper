@@ -258,7 +258,7 @@ class MainWindow(QMainWindow):
         self.access.currentIndexChanged.connect(self.invalidate)
         prep.addWidget(self.access)
         prep.addWidget(label("Grants ALL APPLICATION PACKAGES access to existing files and folders, "
-                             "with inheritance for new content. This includes other packaged apps.", "muted"))
+                             "with inheritance for new content created in Windows. This includes other packaged apps.", "muted"))
         self.check = QPushButton("Inspect permissions")
         self.check.clicked.connect(self.inspect_volume)
         prep.addWidget(self.check)
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         rest.addWidget(label("Choose the recovery journal saved when you prepared this volume. "
                              "It also works after an interrupted preparation.", "muted"))
         rest.addWidget(label("Files are matched by NTFS record ID, even after a rename. Changed permissions "
-                             "are reported for review. New files keep their current permissions.", "muted"))
+                             "are reported for review. Files not recorded in the journal keep their current permissions.", "muted"))
         self.restore_button = QPushButton("Choose journal & restore…")
         self.restore_button.clicked.connect(self.restore_volume)
         rest.addWidget(self.restore_button)
@@ -409,15 +409,34 @@ class MainWindow(QMainWindow):
             return
         if self.offer_unmount(self.prepare_volume):
             return
-        default = str(Path.home() / ("xbox-media-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".sqlite"))
-        backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default, "SQLite journal (*.sqlite)")
+        append = False
+        if self.inspection.get("previously_prepared"):
+            box = QMessageBox(QMessageBox.Question, "Prepare again", "Choose a recovery journal", parent=self)
+            box.setInformativeText("Adding to the journal from the earlier preparation keeps a single journal that restores everything.")
+            existing = box.addButton("Add to Existing Journal…", QMessageBox.AcceptRole)
+            new = box.addButton("New Journal…", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(existing)
+            box.exec()
+            if box.clickedButton() is existing:
+                append = True
+            elif box.clickedButton() is not new:
+                return
+        if append:
+            backup, _ = QFileDialog.getOpenFileName(self, "Choose recovery journal from earlier preparation", str(Path.home()),
+                                                   "SQLite journal (*.sqlite);;All files (*)")
+        else:
+            default = str(Path.home() / ("xbox-media-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".sqlite"))
+            backup, _ = QFileDialog.getSaveFileName(self, "Save recovery journal on your computer", default, "SQLite journal (*.sqlite)")
         if not backup:
             return
-        message = "Grant app access on {}?\n\n{} objects need changes.\nRecovery journal: {}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
-            self.target.text(), self.inspection["changes_needed"], backup)
+        journal_message = ("Add {} objects to journal: {}" if append else "{} objects need changes.\nRecovery journal: {}").format(
+            self.inspection["changes_needed"], backup)
+        message = "Grant app access on {}?\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
+            self.target.text(), journal_message)
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,
-                       "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"])
+                       "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"] + (["--append"] if append else []))
 
     def restore_volume(self):
         if not self.target.text().strip():
@@ -488,19 +507,29 @@ class MainWindow(QMainWindow):
                 message += "\nNeeds review: " + result["blockers"][0]["path"] + ": " + result["blockers"][0]["reason"]
             elif not result["changes_needed"]:
                 message += "\nApp permissions are already present."
+            if result.get("previously_prepared") and result["changes_needed"]:
+                message += ("\nThis drive was prepared before, but {} objects don't have app access yet — usually files "
+                            "copied from a Mac or Linux PC, which don't inherit it. Prepare again to add it.").format(result["changes_needed"])
             self.status.setText(message)
             self.log(message)
             QApplication.alert(self)
         else:
             self.invalidate()
             if self.action == "prepare":
-                self.log("Prepared {} objects. Keep journal: {}".format(result["changed"], result["journal"]))
-                self.status.setText("Permissions prepared. Connect the drive to Xbox and choose “Use for Media”.")
-                self.report(QMessageBox.Information, "Preparation complete",
-                            "Finished preparing {}: {} objects now allow Xbox app access.\n\n"
+                appended = result.get("appended", False)
+                headline = "Objects added to existing journal" if appended else "Preparation complete"
+                summary = ("Added {} objects to the existing journal." if appended else "Prepared {} objects.").format(result["changed"])
+                self.log(summary + " Keep journal: " + result["journal"])
+                self.status.setText((summary if appended else "Permissions prepared.") + " Connect the drive to Xbox and choose “Use for Media”.")
+                done = ("Added {1} objects on {0} to the existing journal. They now allow Xbox app access." if appended
+                        else "Finished preparing {0}: {1} objects now allow Xbox app access.")
+                self.report(QMessageBox.Information, headline,
+                            done.format(self.target.text().strip(), result["changed"]) + "\n\n"
                             "Keep the recovery journal: {}\n\n"
-                            "You can unplug the drive, connect it to your Xbox and choose “Use for Media”.".format(
-                                self.target.text().strip(), result["changed"], result["journal"]))
+                            "You can unplug the drive, connect it to your Xbox and choose “Use for Media”.\n\n"
+                            "Files you copy onto the drive later from a Mac or Linux PC won't have app access until you "
+                            "inspect and prepare it again (add them to this journal). Files copied in Windows inherit "
+                            "access automatically.".format(result["journal"]))
             else:
                 self.log("Restored {} objects; {} already original; {} conflicts; {} missing.".format(
                     result["restored"], result["already_original"], len(result["conflicts"]), len(result["missing"])))
@@ -509,10 +538,10 @@ class MainWindow(QMainWindow):
                     self.report(QMessageBox.Warning, "Restoration needs review", "Some objects are missing or their permissions "
                                 "changed. See the activity log. The journal is retained and restoration can be retried.")
                 else:
-                    self.status.setText("Original recorded permissions restored. New files retain their current permissions.")
+                    self.status.setText("Original recorded permissions restored. Files not recorded in the journal retain their current permissions.")
                     self.report(QMessageBox.Information, "Restoration complete",
                                 "Finished restoring {}: {} objects restored, {} were already original.\n\n"
-                                "New files keep their current permissions.".format(
+                                "Files not recorded in the journal keep their current permissions.".format(
                                     self.target.text().strip(), result["restored"], result["already_original"]))
 
     def report(self, icon, title, message, settings=False):
