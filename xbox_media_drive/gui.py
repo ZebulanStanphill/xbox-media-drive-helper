@@ -23,11 +23,9 @@ from .devices import discover, is_mounted, unmount
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
 QMainWindow { background: #101613; }
-QLabel#eyebrow { color: #83c79a; font-size: 11px; font-weight: 700; }
 QLabel#title { font-size: 29px; font-weight: 700; }
 QLabel#muted { color: #a4b1a8; }
 QLabel#section { font-size: 17px; font-weight: 650; }
-QLabel#badge { color: #a6dbb6; background: #20372a; border-radius: 10px; padding: 7px 12px; }
 QFrame#panel { border: 1px solid #2c3b31; border-radius: 12px; background: #151e18; }
 QFrame#panel QLabel, QFrame#panel QWidget { background: transparent; }
 QPushButton { background: #233027; border: 1px solid #3a4c40; border-radius: 7px; padding: 10px 15px; font-weight: 600; }
@@ -152,13 +150,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.setContentsMargins(30, 26, 30, 24)
         layout.setSpacing(14)
-        header = QHBoxLayout()
-        headings = QVBoxLayout()
-        headings.addWidget(label("XBOX  /  EXTERNAL MEDIA", "eyebrow"))
-        headings.addWidget(label("Your drive. Your files.", "title"))
-        headings.addWidget(label("Prepare NTFS storage for Xbox apps, with a way back.", "muted"))
-        header.addLayout(headings, 1)
-        header.addWidget(label("Linux + macOS", "badge"), alignment=Qt.AlignTop)
+        header = QVBoxLayout()
+        header.addWidget(label("Xbox Media Drive Helper", "title"))
+        header.addWidget(label("Prepare NTFS storage for Xbox apps, with a way back.", "muted"))
         layout.addLayout(header)
 
         intro = QFrame()
