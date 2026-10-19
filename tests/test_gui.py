@@ -178,8 +178,9 @@ class GUITests(unittest.TestCase):
         self.app.processEvents()
         self.assertIsNone(self.window.worker)
 
-    def add_device(self, mounted, path="/dev/disk9s1"):
+    def add_device(self, mounted, path="/dev/disk9s1", disk="/dev/disk9"):
         device = {"path": path, "label": "Media", "size": 10**9, "filesystem": "NTFS", "mounted": mounted, "external": True}
+        device["disk"] = disk
         item = QListWidgetItem("Media")
         item.setData(Qt.UserRole, device)
         self.window.drives.addItem(item)
@@ -360,3 +361,124 @@ class GUITests(unittest.TestCase):
         self.assertEqual([title for title, text in dialog], ["Restoration complete"])
         self.assertIn("3 objects restored, 1 were already original", dialog[0][1])
         self.assertEqual(busy, [False])
+
+    def test_check_mode_uses_selected_whole_disk_and_gates_switching(self):
+        self.add_device(mounted=False)
+        for mode, title, action in (("game", "Game mode (Xbox signature)", "Switch to media mode…"),
+                                    ("media", "Media / PC mode (standard signature)", "Switch to game mode…")):
+            result = {"disk": "/dev/disk9", "mode": mode, "scheme": "gpt", "xbox_formatted": mode == "game"}
+            with self.subTest(mode=mode), \
+                    patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments) as command, \
+                    patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(
+                        stdout=json.dumps(result), stderr="", returncode=0)):
+                self.window.check_drive_mode()
+                self.assertFalse(self.window.switch_mode_button.isEnabled())
+                self.wait_for_idle()
+            command.assert_called_once_with(["mode", "/dev/disk9"], elevate=True)
+            self.assertEqual(self.window.disk_layout, result)
+            self.assertIn(title, self.window.mode_status.text())
+            self.assertIn("GPT", self.window.mode_status.text())
+            self.assertIn("formatted by an Xbox", self.window.mode_status.text())
+            self.assertTrue(self.window.switch_mode_button.isEnabled())
+            self.assertEqual(self.window.switch_mode_button.text(), action)
+        self.window.target.setText("/dev/other")
+        self.assertIsNone(self.window.disk_layout)
+        self.assertFalse(self.window.switch_mode_button.isEnabled())
+
+    def test_check_mode_resolves_typed_path_instead_of_old_selection(self):
+        self.add_device(mounted=False)
+        self.window.target.setText("/dev/sdb2")
+        with patch("xbox_media_drive.gui.whole_disk", return_value="/dev/sdb") as resolve, \
+                patch.object(self.window, "start") as start:
+            self.window.check_drive_mode()
+        resolve.assert_called_once_with("/dev/sdb2")
+        start.assert_called_once_with("check-mode", ["mode", "/dev/sdb"])
+
+    def test_unknown_or_blank_layout_never_enables_switching(self):
+        self.window.action = "check-mode"
+        for mode, scheme in ((None, "gpt"), ("media", "none")):
+            self.window.completed({"disk": "/dev/disk9", "mode": mode, "scheme": scheme, "xbox_formatted": False})
+            self.assertFalse(self.window.switch_mode_button.isEnabled())
+
+    def test_switch_mode_arguments_warnings_busy_controls_and_completion(self):
+        self.add_device(mounted=False)
+        for previous, target in (("media", "game"), ("game", "media")):
+            with tempfile.TemporaryDirectory() as folder, self.subTest(target=target):
+                backup = os.path.join(folder, "sector.mbr")
+                self.window.disk_layout = {"disk": "/dev/disk9", "mode": previous, "scheme": "gpt", "xbox_formatted": False}
+                result = {"target": "/dev/disk9", "mode": target, "backup": backup}
+                busy = []
+                with patch("xbox_media_drive.gui.is_disk_mounted", return_value=False), \
+                        patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                        patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(
+                            stdout=json.dumps(result), stderr="", returncode=0)) as helper, \
+                        patch("xbox_media_drive.gui.discover", return_value=[]) as discover, \
+                        patch.object(QFileDialog, "getSaveFileName", return_value=(backup, "")) as save, \
+                        patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, \
+                        self.dialogs(lambda box: busy.append(self.window.spinner.isVisible())) as dialog:
+                    self.window.switch_drive_mode()
+                    self.assertIn("Switching /dev/disk9 to {} mode…".format(target), self.window.busy.text())
+                    for button in (self.window.check_mode_button, self.window.switch_mode_button, self.window.restore_sector_button):
+                        self.assertIn(button, self.window.controls)
+                        self.assertFalse(button.isEnabled())
+                    self.wait_for_idle()
+                self.assertEqual(helper.call_args.args[0], ["helper", "mode", "/dev/disk9", "--set", target,
+                                                           "--backup", backup, "--yes"])
+                self.assertEqual(save.call_args.kwargs["options"], QFileDialog.DontConfirmOverwrite)
+                warning = question.call_args.args[2]
+                self.assertIn("not formatted by an Xbox", warning)
+                self.assertIn("erases everything" if target == "game" else "Don't let the Xbox format it", warning)
+                self.assertEqual(busy, [False])
+                self.assertEqual(dialog[0][0], "Drive mode switched")
+                self.assertIn(backup, dialog[0][1])
+                self.assertIn("Unplug and reconnect", dialog[0][1])
+                if __import__("sys").platform == "darwin":
+                    self.assertIn("click Ignore", dialog[0][1])
+                discover.assert_called_once()
+                self.assertIsNone(self.window.disk_layout)
+                self.assertFalse(self.window.switch_mode_button.isEnabled())
+
+    def test_switch_mode_refuses_existing_backup(self):
+        self.window.disk_layout = {"disk": "/dev/disk9", "mode": "media", "xbox_formatted": False}
+        with tempfile.NamedTemporaryFile(suffix=".mbr") as backup, \
+                patch("xbox_media_drive.gui.is_disk_mounted", return_value=False), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=(backup.name, "")), \
+                patch.object(QMessageBox, "warning") as warning, \
+                patch.object(QMessageBox, "question") as question, patch.object(self.window, "start") as start:
+            self.window.switch_drive_mode()
+        self.assertIn("never overwritten", warning.call_args.args[2])
+        question.assert_not_called()
+        start.assert_not_called()
+
+    def test_switch_mode_unmounts_whole_disk_before_continuing(self):
+        device = self.add_device(mounted=True)
+        self.window.disk_layout = {"disk": "/dev/disk9", "mode": "media", "scheme": "gpt", "xbox_formatted": False}
+        backup = "/tmp/new-sector.mbr"
+        with patch("xbox_media_drive.gui.is_disk_mounted", side_effect=[True, False]), \
+                patch("xbox_media_drive.gui.unmount", return_value="/dev/disk9") as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
+                patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(
+                    stdout='{"target":"/dev/disk9","mode":"game"}', stderr="", returncode=0)), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=(backup, "")), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, self.dialogs():
+            self.window.switch_drive_mode()
+            self.wait_for_idle()
+        unmount.assert_called_once_with("/dev/disk9", whole=True)
+        self.assertEqual([call.args[1] for call in question.call_args_list], ["Unmount disk", "Switch to game mode"])
+
+    def test_restore_sector_passes_backup_to_helper_and_reports_reconnect(self):
+        self.add_device(mounted=False)
+        with patch("xbox_media_drive.gui.is_disk_mounted", return_value=False), \
+                patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(
+                    stdout='{"target":"/dev/disk9","mode":"media"}', stderr="", returncode=0)) as helper, \
+                patch("xbox_media_drive.gui.discover", return_value=[]), \
+                patch.object(QFileDialog, "getOpenFileName", return_value=("/tmp/sector.mbr", "")), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes), self.dialogs() as dialog:
+            self.window.restore_boot_sector()
+            self.wait_for_idle()
+        self.assertEqual(helper.call_args.args[0], ["helper", "mode", "/dev/disk9", "--restore", "/tmp/sector.mbr", "--yes"])
+        self.assertEqual(dialog[0][0], "Boot sector restored")
+        self.assertIn("Unplug and reconnect", dialog[0][1])
+        self.assertIn("/tmp/sector.mbr", dialog[0][1])

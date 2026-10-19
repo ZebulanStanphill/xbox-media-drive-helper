@@ -167,3 +167,131 @@ class DeviceTests(unittest.TestCase):
             with self.subTest(node=node), patch("sys.platform", "linux"), \
                     patch("xbox_media_drive.devices.linux_nodes", return_value=[(node, True)]):
                 self.assertEqual(is_mounted("/dev/null"), expected)
+
+
+class WholeDiskTests(unittest.TestCase):
+    def test_mac_discovery_partitionless_disk_has_media_label_and_disk_path(self):
+        listing = plistlib.dumps({"AllDisksAndPartitions": [{"DeviceIdentifier": "disk4"}]})
+        with patch("sys.platform", "darwin"), patch("xbox_media_drive.devices.run", return_value=listing), \
+                patch("xbox_media_drive.devices.mac_info", return_value={"MediaName": "USB", "Content": "FDisk_partition_scheme"}):
+            device = discover()[0]
+            self.assertEqual((device.label, device.disk, device.filesystem), ("USB", "/dev/disk4", "FDisk_partition_scheme"))
+
+    def test_linux_parent_chain_resolves_stacked_device(self):
+        from xbox_media_drive.devices import whole_disk
+        nodes = [({"path": "/dev/sdz", "type": "disk"}, True),
+                 ({"path": "/dev/sdz1", "type": "part", "pkname": "sdz"}, True),
+                 ({"path": "/dev/dm-0", "type": "crypt", "pkname": "/dev/sdz1"}, True)]
+        with patch("sys.platform", "linux"), patch("xbox_media_drive.devices.resolve_path", return_value="/dev/dm-0"), \
+                patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                patch("xbox_media_drive.devices.linux_nodes", return_value=nodes):
+            self.assertEqual(whole_disk("/dev/dm-0"), "/dev/sdz")
+
+    def test_game_mode_rejects_images(self):
+        from xbox_media_drive.devices import validate_whole_disk
+        with tempfile.NamedTemporaryFile() as image:
+            with self.assertRaisesRegex(DriveError, "Game-drive mode applies to a whole external disk, not an image"):
+                validate_whole_disk(image.name)
+
+    def test_mac_parent_resolution_and_whole_unmount(self):
+        from xbox_media_drive.devices import whole_disk
+        infos = {"/dev/disk9s1": {"Internal": False, "ParentWholeDisk": "disk9"},
+                 "/dev/disk9": {"Internal": False, "WholeDisk": True}}
+        with patch("sys.platform", "darwin"), patch("xbox_media_drive.devices.resolve_path", return_value="/dev/disk9s1"), \
+                patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                patch("xbox_media_drive.devices.mac_info", side_effect=infos.__getitem__), \
+                patch("xbox_media_drive.devices.run") as run:
+            self.assertEqual(whole_disk("/dev/disk9s1"), "/dev/disk9")
+            self.assertEqual(unmount("/dev/disk9s1", whole=True), "/dev/disk9")
+            run.assert_called_once_with(["diskutil", "unmountDisk", "/dev/disk9"])
+
+    def test_whole_disk_validation_refuses_mounted_children(self):
+        from xbox_media_drive.devices import validate_whole_disk
+        with patch("xbox_media_drive.devices.whole_disk", return_value="/dev/sdz"), \
+                patch("xbox_media_drive.devices.is_disk_mounted", return_value=True), \
+                patch("sys.platform", "linux"), patch("xbox_media_drive.devices.linux_device"):
+            with self.assertRaisesRegex(DriveError, "Click Unmount"):
+                validate_whole_disk("/dev/sdz1")
+
+    def test_mac_disk_mount_state_checks_child_volumes(self):
+        from xbox_media_drive.devices import is_disk_mounted
+        listing = plistlib.dumps({"AllDisks": ["disk9", "disk9s1"]})
+        infos = {"/dev/disk9": {}, "/dev/disk9s1": {"MountPoint": "/Volumes/Media"}}
+        with patch("sys.platform", "darwin"), patch("xbox_media_drive.devices.whole_disk", return_value="/dev/disk9"), \
+                patch("xbox_media_drive.devices.run", return_value=listing), \
+                patch("xbox_media_drive.devices.mac_info", side_effect=infos.__getitem__):
+            self.assertTrue(is_disk_mounted("/dev/disk9"))
+
+    def test_linux_disk_mount_state_and_unmount_include_descendants(self):
+        from xbox_media_drive.devices import is_disk_mounted
+        children = [{"path": "/dev/sdz1", "type": "part", "mountpoints": ["/media/a"]},
+                    {"path": "/dev/sdz2", "type": "part", "mountpoints": [None]}]
+        disk = {"path": "/dev/sdz", "type": "disk", "children": children}
+        with patch("sys.platform", "linux"), patch("xbox_media_drive.devices.whole_disk", return_value="/dev/sdz"), \
+                patch("xbox_media_drive.devices.linux_nodes", return_value=[(disk, True)]), \
+                patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                patch("xbox_media_drive.devices.shutil.which", return_value="/usr/bin/udisksctl"), \
+                patch("xbox_media_drive.devices.run") as run:
+            self.assertTrue(is_disk_mounted("/dev/sdz"))
+            self.assertEqual(unmount("/dev/sdz", whole=True), "/dev/sdz")
+            run.assert_called_once_with(["udisksctl", "unmount", "-b", "/dev/sdz1"])
+
+    def test_mac_discovery_parent_and_unnamed_fallback(self):
+        listing = plistlib.dumps({"AllDisksAndPartitions": [{"DeviceIdentifier": "disk9", "Partitions": [
+            {"DeviceIdentifier": "disk9s1"}]}]})
+        with patch("sys.platform", "darwin"), patch("xbox_media_drive.devices.run", return_value=listing), \
+                patch("xbox_media_drive.devices.mac_info", return_value={"ParentWholeDisk": "disk10"}):
+            device = discover()[0]
+            self.assertEqual((device.label, device.disk), ("Unnamed volume", "/dev/disk10"))
+
+    def test_linux_discovery_sets_parent_disk(self):
+        disk = {"path": "/dev/sdz", "type": "disk", "tran": "usb", "children": [
+            {"path": "/dev/sdz1", "type": "part"}]}
+        with patch("sys.platform", "linux"), patch("xbox_media_drive.devices.run", return_value=json.dumps({"blockdevices": [disk]}).encode()):
+            self.assertEqual(discover()[0].disk, "/dev/sdz")
+
+    def test_mac_resolution_allows_internal_but_validation_and_unmount_refuse(self):
+        from xbox_media_drive.devices import whole_disk, validate_whole_disk
+        for info in ({"WholeDisk": True, "Internal": True},
+                     {"WholeDisk": True, "Internal": False, "VirtualOrPhysical": "Virtual"}):
+            with self.subTest(info=info), patch("sys.platform", "darwin"), \
+                    patch("xbox_media_drive.devices.resolve_path", return_value="/dev/disk9"), \
+                    patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                    patch("xbox_media_drive.devices.mac_info", return_value=info):
+                self.assertEqual(whole_disk("/dev/disk9"), "/dev/disk9")
+                with self.assertRaisesRegex(DriveError, "external physical"):
+                    validate_whole_disk("/dev/disk9")
+                with self.assertRaisesRegex(DriveError, "external physical"):
+                    unmount("/dev/disk9", whole=True)
+
+    def test_linux_resolution_internal_and_rejection_of_virtual_devices(self):
+        from xbox_media_drive.devices import whole_disk, validate_whole_disk
+        for kind in ("disk", "loop", "crypt"):
+            nodes = [({"path": "/dev/sdz", "type": kind}, False)]
+            with self.subTest(kind=kind), patch("sys.platform", "linux"), \
+                    patch("xbox_media_drive.devices.resolve_path", return_value="/dev/sdz"), \
+                    patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                    patch("xbox_media_drive.devices.linux_nodes", return_value=nodes):
+                if kind == "disk":
+                    self.assertEqual(whole_disk("/dev/sdz"), "/dev/sdz")
+                else:
+                    with self.assertRaises(DriveError):
+                        whole_disk("/dev/sdz")
+                with self.assertRaises(DriveError):
+                    validate_whole_disk("/dev/sdz")
+                with self.assertRaises(DriveError):
+                    unmount("/dev/sdz", whole=True)
+
+    def test_linux_disk_mount_state_checks_kernel_mount_aliases(self):
+        from xbox_media_drive.devices import is_disk_mounted
+        node = {"path": "/dev/sdz", "type": "disk", "mountpoints": [None]}
+        with patch("sys.platform", "linux"), patch("xbox_media_drive.devices.whole_disk", return_value="/dev/sdz"), \
+                patch("xbox_media_drive.devices.linux_nodes", return_value=[(node, True)]), \
+                patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_rdev=os.makedev(8, 240))), \
+                patch.object(Path, "read_text", return_value="1 2 8:240 / /mnt rw - ntfs /dev/alias rw"):
+            self.assertTrue(is_disk_mounted("/dev/sdz"))
+        with patch("sys.platform", "linux"), patch("xbox_media_drive.devices.whole_disk", return_value="/dev/sdz"), \
+                patch("xbox_media_drive.devices.linux_nodes", return_value=[(node, True)]), \
+                patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_rdev=os.makedev(8, 240))), \
+                patch.object(Path, "read_text", return_value=""):
+            self.assertFalse(is_disk_mounted("/dev/sdz"))

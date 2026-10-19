@@ -61,3 +61,50 @@ class CLITests(unittest.TestCase):
             status, _, error = self.call(["prepare", "/dev/test", "--backup", "b.sqlite", "--append"])
         self.assertEqual(status, 0)
         self.assertIn("add to journal b.sqlite", error)
+
+
+class ModeCLITests(unittest.TestCase):
+    call = CLITests.call
+
+    def test_mode_show_has_no_native_dependency(self):
+        with patch("xbox_media_drive.cli.whole_disk", return_value="/dev/disk9"), \
+                patch("xbox_media_drive.cli.read_head", return_value=b"header"), \
+                patch("xbox_media_drive.cli.analyze", return_value={"mode": "game"}), \
+                patch("xbox_media_drive.cli.load_library") as native:
+            status, output, error = self.call(["--json", "mode", "/dev/disk9s1"])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output), {"disk": "/dev/disk9", "mode": "game"})
+        native.assert_not_called()
+
+    def test_mode_write_and_restore(self):
+        with patch("xbox_media_drive.cli.validate_whole_disk", return_value="/dev/disk9"), \
+                patch("xbox_media_drive.cli.switch", return_value={"mode": "game"}) as switch:
+            status, _, error = self.call(["mode", "/dev/disk9s1", "--set", "game", "--backup", "b", "--yes"])
+        self.assertEqual(status, 0)
+        self.assertIn("unreadable here", error)
+        switch.assert_called_once_with("/dev/disk9", "game", "b")
+        with patch("xbox_media_drive.cli.validate_whole_disk", return_value="/dev/disk9"), \
+                patch("xbox_media_drive.cli.restore_sector", return_value={}) as restore:
+            status, _, _ = self.call(["mode", "/dev/disk9", "--restore", "b", "--yes"])
+        self.assertEqual(status, 0)
+        restore.assert_called_once_with("/dev/disk9", "b")
+
+    def test_mode_requires_confirmation_and_backup(self):
+        with patch("xbox_media_drive.cli.validate_whole_disk", return_value="/dev/disk9"), \
+                patch("sys.stdin.isatty", return_value=False), \
+                patch("xbox_media_drive.cli.switch") as switch:
+            status, _, error = self.call(["mode", "/dev/disk9", "--set", "game", "--backup", "b"])
+        self.assertEqual(status, 1)
+        self.assertIn("--yes", error)
+        switch.assert_not_called()
+        self.assertEqual(self.call(["mode", "disk", "--set", "game", "--yes"])[0], 1)
+
+    def test_mode_confirmation_uses_canonical_disk(self):
+        with patch("xbox_media_drive.cli.validate_whole_disk", return_value="/dev/disk9"), \
+                patch("sys.stdin.isatty", return_value=True), \
+                patch("builtins.input", return_value="/dev/disk9"), \
+                patch("xbox_media_drive.cli.switch", return_value={}) as switch:
+            status, _, error = self.call(["mode", "/dev/disk9s1", "--set", "media", "--backup", "b"])
+        self.assertEqual(status, 0)
+        self.assertIn("unreadable by Xbox", error)
+        switch.assert_called_once()

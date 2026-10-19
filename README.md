@@ -2,15 +2,15 @@
 
 # Xbox Media Drive Helper
 
-A Linux and macOS desktop app and CLI for preparing an **existing NTFS media volume** for Xbox One apps and restoring its original permissions. It changes NTFS access control lists, keeps file contents, and saves a recovery journal on your computer. It does not format, repartition, or change MBR/GPT signatures.
+A Linux and macOS desktop app and CLI for preparing an **existing NTFS media volume** for Xbox One apps and restoring its original permissions. It changes NTFS access control lists, keeps file contents, and saves a recovery journal on your computer. The permission workflow does not format, repartition, or change MBR/GPT signatures. The optional [game drive mode](#game-drive-mode-switching-between-xbox-game-storage-and-pc-readable) changes only the two-byte boot signature, and only when you run it.
 
-**Status:** working source release; tested on macOS with disposable NTFS images. Physical Xbox/USB hardware and Linux runtime behavior still need validation. The CI workflow covers Linux and macOS but has not been run here. Keep a separate backup of irreplaceable files: an ACL journal is not a backup of file data or damaged filesystem metadata.
+**Status:** working source release; tested on macOS with disposable NTFS images. Physical Xbox/USB hardware and Linux runtime behavior still need validation. The game drive mode is community-documented and untested on real hardware here. The CI workflow covers Linux and macOS but has not been run here. Keep a separate backup of irreplaceable files: an ACL journal is not a backup of file data or damaged filesystem metadata.
 
 ## What “Xbox media drive” means
 
-For media, the drive remains ordinary NTFS and remains readable by PCs. Select **Use for Media** when connecting it to Xbox. The unusual disk signature used by game-storage tools is outside this app's scope; an Xbox game drive is not a media volume to convert in place. [Seagate's Xbox One instructions](https://www.seagate.com/gb/en/support/kb/game-drive-for-xbox-one-setup-and-troubleshooting-006199en/) distinguish media use from the console's game-storage formatting.
+For media, the drive remains ordinary NTFS and remains readable by PCs. Select **Use for Media** when connecting it to Xbox. The unusual disk signature used by game-storage drives is outside the permission workflow: an Xbox game drive is not a media volume to prepare in place. Switching that signature is a separate whole-disk operation, described in [Game drive mode](#game-drive-mode-switching-between-xbox-game-storage-and-pc-readable). [Seagate's Xbox One instructions](https://www.seagate.com/gb/en/support/kb/game-drive-for-xbox-one-setup-and-troubleshooting-006199en/) distinguish media use from the console's game-storage formatting.
 
-The tool works only on NTFS. exFAT and FAT32 volumes have no file permissions, so there is nothing to grant on them; the tool says so and makes no changes. macOS may list an exFAT partition as "Windows_NTFS" because MBR uses one partition type code for both.
+The permission workflow works only on NTFS. exFAT and FAT32 volumes have no file permissions, so there is nothing to grant on them; the tool says so and makes no changes. macOS may list an exFAT partition as "Windows_NTFS" because MBR uses one partition type code for both.
 
 Some sandboxed Xbox apps need an NTFS grant to **ALL APPLICATION PACKAGES**, SID `S-1-15-2-1`. This tool adds that grant to the volume root and every existing user file/directory, with object/container inheritance on directories. It preserves other ACEs, ownership and audit ACLs. The default **Modify** grant includes read, write, execute and delete; **Full control** additionally permits changing permissions and ownership. The grant applies to packaged apps generally, not one particular Xbox app. See Microsoft's [AppContainer security model](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation), [DACL behavior](https://learn.microsoft.com/en-us/windows/win32/secauthz/dacls-and-aces), and the existing [Windows Xbox permission tool](https://github.com/YTReviveMe/Xbox-UWP-Permission-Tool).
 
@@ -140,15 +140,55 @@ sudo .venv/bin/xbox-media-drive journal /home/me/media.sqlite
 
 `--json` writes one result object to stdout; native diagnostics and progress go to stderr. Exit codes: `0` success; `1` failure; `2` invalid arguments; `3` inspection blockers or an incomplete restore; `130` interruption. Library discovery failures explain how to install or select the dependency.
 
+## Game drive mode (switching between Xbox game storage and PC-readable)
+
+This is a separate whole-disk operation. It does not prepare or restore permissions, and preparing or restoring permissions does not change the signature. It toggles the two-byte boot signature at bytes 510:512 of a GPT+NTFS disk's first sector:
+
+- **Standard `55AA`** (`--set media`): PC-readable NTFS, used with **Use for Media** on Xbox.
+- **Xbox `99CC`** (`--set game`): Xbox game storage.
+
+The change is reversible in both directions and leaves files untouched. Encrypted game packages are only visible and copyable in media mode.
+
+In the desktop app, select the drive, open **Game drive mode**, and click **Check drive mode**. The action offers the opposite mode, unmounts the whole disk if needed, and asks where to save a new boot sector backup. **Restore boot sector from backup…** returns to the mode saved in that backup. The “formatted by an Xbox” hint reflects the disk layout; it is not proof of console compatibility.
+
+Requirements and cautions:
+
+- **Whole disk.** Use the disk device (`/dev/disk4`), not a partition (`/dev/disk4s1`). Unmount every volume on it first: `diskutil unmountDisk /dev/disk4` on macOS.
+- **Root.** The helper writes the sector as root. On macOS, raw disk access also needs **Full Disk Access** (see [Install](#macos-application)).
+- **Backup.** Each change first saves the original 512-byte sector durably to the file given by `--backup`. The tool never overwrites an existing backup. Keep it: `--restore` needs it to put the original sector back.
+- **Reconnect.** After a change, unplug the drive and plug it back in before using it on Xbox or a PC.
+- **macOS.** If macOS reports that the disk is not readable, click **Ignore**.
+- **Formatting risk.** Setting `99CC` on a drive that was not formatted by an Xbox may make the console offer to format it, which erases all data on the drive.
+
+```sh
+# Show the current signature (whole disk, read-only)
+sudo .venv/bin/xbox-media-drive mode /dev/disk4
+
+# Unmount every volume on the disk without ejecting it
+diskutil unmountDisk /dev/disk4
+
+# Set media mode (55AA), saving the original sector first
+sudo .venv/bin/xbox-media-drive mode /dev/disk4 --set media --backup "$PWD/xbox-original.mbr"
+
+# Set game mode (99CC), saving the original sector first
+sudo .venv/bin/xbox-media-drive mode /dev/disk4 --set game --backup "$PWD/pc-original.mbr"
+
+# Restore the original sector from a backup file
+sudo .venv/bin/xbox-media-drive mode /dev/disk4 --restore "$PWD/xbox-original.mbr"
+```
+
+This behavior comes from community research and has **not been tested on real hardware** in this project. See the [Xbox One research wiki on hard drive partitioning](https://xboxoneresearch.github.io/wiki/operating-system/harddrive-partitioning/) and the community converters [XboxOneStorageConverter](https://github.com/BrandonReynolds/XboxOneStorageConverter) and [xboxoneexternal](https://github.com/gitFurious/xboxoneexternal).
+
 ## Preservation and recovery
 
-- **No partition changes or file-content writes.** The only requested changes are NTFS DACLs. NTFS-3G also maintains its own filesystem metadata when closing a writable volume.
-- **Offline/external only.** Mounted volumes and internal physical disks are refused. Select a volume boot sector, not an MBR/GPT whole-disk image. Attached disk images, NTFS metadata records, Windows' root `System Volume Information` and `$RECYCLE.BIN` folders, and reparse points are excluded/refused as appropriate. Raw NTFS “superfloppy” volumes without a partition table are accepted.
+- **No partition changes or file-content writes in the permission workflow.** Its only requested changes are NTFS DACLs. NTFS-3G also maintains its own filesystem metadata when closing a writable volume.
+- **Game drive mode keeps its own backup.** Its signature toggle changes only bytes 510:512 and needs the saved original sector for `--restore`; see [Game drive mode](#game-drive-mode-switching-between-xbox-game-storage-and-pc-readable).
+- **Offline/external only for the permission workflow.** Mounted volumes and internal physical disks are refused. Select a volume boot sector, not an MBR/GPT whole-disk image; game drive mode is the whole-disk exception above. Attached disk images, NTFS metadata records, Windows' root `System Volume Information` and `$RECYCLE.BIN` folders, and reparse points are excluded/refused as appropriate. Raw NTFS “superfloppy” volumes without a partition table are accepted.
 - **Preflight before ACL writes.** All planned descriptors are validated and journaled before changing the first ACL. Existing deny ACEs, complex ACLs, noncanonical ACL order, invalid descriptors and EFS files stop automatic preparation. Reparse points are skipped and reported; their targets are not followed. Hard-linked files are processed once.
 - **Durable journal.** Each original and proposed security descriptor is stored in a host-side SQLite journal before changes. Full synchronous commits, and full filesystem sync on macOS, protect the journal. Interrupted operations retain the journal; restore checks actual NTFS descriptors instead of trusting possibly stale progress flags.
 - **Restore matches the volume and file identity.** Boot-sector fingerprint and NTFS volume serial prevent using the wrong journal. Files are matched by their MFT record **and sequence number**, so renamed files can be restored and reused/deleted records are not mistaken for the original files. Byte-identical cloned volumes share these identifiers; choose the intended physical drive yourself.
 - **Later edits are preserved.** If an object's current descriptor differs from both the recorded original and the prepared descriptor, restore reports a conflict. Missing objects are reported. It restores other matching objects, retains the journal, and returns exit code `3` for follow-up. Retrying restore is safe.
-- **The journal is the only way back.** Automatic restoration needs the journal used for preparation, including any appended later. If it is lost, remove the **ALL APPLICATION PACKAGES** entries manually in Windows (Security tab, or `icacls`).
+- **For permission changes, the journal is the only way back.** Automatic restoration needs the journal used for preparation, including any appended later. If it is lost, remove the **ALL APPLICATION PACKAGES** entries manually in Windows (Security tab, or `icacls`).
 - **Files copied from macOS or Linux need re-preparation.** NTFS-3G does not apply the inherited app grant to files it creates, so files copied after preparation lack it until you Inspect and prepare again with **Add to Existing Journal** (or `prepare --append`). Files created on Windows inherit the grant automatically. This does not change the filesystem type: the drive remains standard NTFS throughout.
 
 A journal reverses this tool's recorded permission changes, not unknown changes made by another utility. If your drive already has Xbox app permissions, inspection reports that; the tool cannot reconstruct permissions from before its first use. It never runs repair, clears hibernation, or enables a force/recovery mount. Fully shut down Windows and check the filesystem there if NTFS-3G refuses a writable session.

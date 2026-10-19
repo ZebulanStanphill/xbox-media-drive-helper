@@ -1,6 +1,6 @@
-"""Xbox media preparation. File data and partition tables are never edited."""
+"""Xbox media permissions and reversible whole-disk game-drive signatures."""
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
 
 
 class DriveError(Exception):

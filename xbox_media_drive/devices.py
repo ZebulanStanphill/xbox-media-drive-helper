@@ -41,6 +41,7 @@ class Device:
     filesystem: str
     mounted: bool
     external: bool
+    disk: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -48,14 +49,16 @@ class Device:
 
 def linux_nodes():
     data = json.loads(run(["lsblk", "--json", "--bytes", "--paths", "--output",
-                           "NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,MOUNTPOINTS,RM,TRAN,HOTPLUG"]))
+                           "NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,MOUNTPOINTS,RM,TRAN,HOTPLUG,PKNAME"]))
     found = []
 
-    def visit(node, external=False):
+    def visit(node, external=False, parent=None):
         external = external or bool(node.get("rm")) or bool(node.get("hotplug")) or node.get("tran") == "usb"
+        if parent and not node.get("pkname"):
+            node["pkname"] = parent
         found.append((node, external))
         for child in node.get("children", []):
-            visit(child, external)
+            visit(child, external, node["path"])
 
     for node in data.get("blockdevices", []):
         visit(node)
@@ -71,18 +74,21 @@ def discover():
         data = plistlib.loads(run(["diskutil", "list", "-plist", "external", "physical"]))
         devices = []
         for disk in data.get("AllDisksAndPartitions", []):
-            for node in disk.get("Partitions", [disk]):
+            for node in disk.get("Partitions") or [disk]:
                 path = "/dev/" + node["DeviceIdentifier"]
                 info = mac_info(path)
-                devices.append(Device(path, info.get("VolumeName", "Unnamed volume"),
+                devices.append(Device(path, info.get("VolumeName") or info.get("MediaName") or "Unnamed volume",
                                       info.get("TotalSize", info.get("Size", 0)),
-                                      info.get("FilesystemType", node.get("Content", "unknown")),
-                                      bool(info.get("MountPoint")), True))
+                                      info.get("FilesystemType") or info.get("Content") or node.get("Content") or "unknown",
+                                      bool(info.get("MountPoint")), True,
+                                      "/dev/" + info.get("ParentWholeDisk", disk["DeviceIdentifier"])))
         return devices
     if sys.platform.startswith("linux"):
+        nodes = linux_nodes()
         return [Device(node["path"], node.get("label") or node["path"], int(node.get("size") or 0),
-                       node.get("fstype") or "unknown", any(node.get("mountpoints") or []), external)
-                for node, external in linux_nodes() if external and node["type"] in ("part", "disk")
+                       node.get("fstype") or "unknown", any(node.get("mountpoints") or []), external,
+                       _linux_whole_disk(node, nodes)["path"])
+                for node, external in nodes if external and node["type"] in ("part", "disk")
                 and (node["type"] == "part" or not node.get("children"))]
     raise DriveError("Supported platforms are Linux and macOS.")
 
@@ -121,6 +127,110 @@ def linux_device(target):
     if not match or not match[1]:
         raise DriveError("Only external drives reported by lsblk can be modified.")
     return match[0]
+
+
+def _linux_whole_disk(node, nodes):
+    """Follow lsblk parent links, including stacked block devices."""
+    seen = set()
+    while node.get("pkname"):
+        parent = node["pkname"]
+        parent = parent if parent.startswith("/") else "/dev/" + parent
+        if parent in seen:
+            raise DriveError("Could not resolve the whole external disk.")
+        seen.add(parent)
+        match = next((candidate for candidate, _ in nodes
+                      if os.path.realpath(candidate["path"]) == os.path.realpath(parent)), None)
+        if match is None:
+            raise DriveError("Could not resolve the whole external disk.")
+        node = match
+    if node.get("type") != "disk":
+        raise DriveError("Select a whole external physical disk.")
+    return node
+
+
+def whole_disk(path):
+    """Resolve a selected device to its canonical whole-disk path."""
+    target = resolve_path(path)
+    mode = os.stat(target).st_mode
+    if stat.S_ISREG(mode):
+        raise DriveError("Game-drive mode applies to a whole external disk, not an image.")
+    if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
+        raise DriveError("Select a whole external physical disk.")
+    if sys.platform == "darwin":
+        if not re.fullmatch(r"/dev/r?disk\d+(s\d+)?", target):
+            raise DriveError("Unsupported macOS device path.")
+        target = target.replace("/dev/rdisk", "/dev/disk", 1)
+        info = mac_info(target)
+        parent = info.get("ParentWholeDisk")
+        if parent:
+            target = "/dev/" + parent
+            if not re.fullmatch(r"/dev/disk\d+", target):
+                raise DriveError("Unsupported macOS device path.")
+            info = mac_info(target)
+        if not info.get("WholeDisk"):
+            raise DriveError("Select a whole external physical disk.")
+        return target
+    if sys.platform.startswith("linux"):
+        nodes = linux_nodes()
+        node = next((node for node, _ in nodes if os.path.realpath(node["path"]) == target), None)
+        if node is None:
+            raise DriveError("The selected disk is no longer connected.")
+        return os.path.realpath(_linux_whole_disk(node, nodes)["path"])
+    raise DriveError("Supported platforms are Linux and macOS.")
+
+
+def _linux_descendants(node):
+    yield node
+    for child in node.get("children", []):
+        yield from _linux_descendants(child)
+
+
+def _linux_disk_nodes(target):
+    nodes = linux_nodes()
+    disk = next((node for node, _ in nodes if os.path.realpath(node["path"]) == target), None)
+    if disk is None:
+        raise DriveError("The selected disk is no longer connected.")
+    # Include both the nested lsblk tree and nodes linked through PKNAME.
+    found = {node["path"]: node for node in _linux_descendants(disk)}
+    for node, _ in nodes:
+        try:
+            if os.path.realpath(_linux_whole_disk(node, nodes)["path"]) == target:
+                found[node["path"]] = node
+        except DriveError:
+            continue
+    return list(found.values())
+
+
+def is_disk_mounted(path):
+    """Whether any volume on the selected whole disk is mounted."""
+    target = whole_disk(path)
+    if sys.platform == "darwin":
+        listing = plistlib.loads(run(["diskutil", "list", "-plist", target]))
+        identifiers = listing.get("AllDisks", [])
+        for disk in listing.get("AllDisksAndPartitions", []):
+            identifiers += [node["DeviceIdentifier"] for node in disk.get("Partitions", [])]
+        return any(bool(mac_info("/dev/" + name).get("MountPoint"))
+                   for name in set(identifiers + [target.removeprefix("/dev/")]))
+    nodes = _linux_disk_nodes(target)
+    if any(any(node.get("mountpoints") or []) for node in nodes):
+        return True
+    keys = set()
+    for node in nodes:
+        device_id = os.stat(node["path"]).st_rdev
+        keys.add("{}:{}".format(os.major(device_id), os.minor(device_id)))
+    return any(line.split()[2] in keys for line in Path("/proc/self/mountinfo").read_text().splitlines())
+
+
+def validate_whole_disk(path):
+    """Require an unmounted external physical disk for game-drive mode."""
+    target = whole_disk(path)
+    if sys.platform == "darwin":
+        mac_device(target)
+    elif sys.platform.startswith("linux"):
+        linux_device(target)
+    if is_disk_mounted(target):
+        raise DriveError("The disk or one of its volumes is mounted. Click Unmount in this app first.")
+    return target
 
 
 def validate_target(path):
@@ -184,18 +294,20 @@ def is_mounted(path):
     return False
 
 
-def unmount(path):
+def unmount(path, whole=False):
     """Unmount a mounted external partition without ejecting or disconnecting it. Needs no privileges."""
-    target = resolve_path(path)
+    target = whole_disk(path) if whole else resolve_path(path)
     mode = os.stat(target).st_mode
     if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
         raise DriveError("Only external partitions can be unmounted.")
     if sys.platform == "darwin":
         target, info = mac_device(target)
-        require_mac_partition(info)
-        command = ["diskutil", "unmount", target]
+        if not whole:
+            require_mac_partition(info)
+        command = ["diskutil", "unmountDisk" if whole else "unmount", target]
     elif sys.platform.startswith("linux"):
-        if linux_device(target).get("children"):
+        node = linux_device(target)
+        if not whole and node.get("children"):
             raise DriveError("Select the NTFS partition, not the whole disk.")
         if not shutil.which("udisksctl"):
             raise DriveError("udisksctl is not installed. Unmount {0} with your file manager or sudo umount {0}.".format(target))
@@ -203,7 +315,12 @@ def unmount(path):
     else:
         raise DriveError("Supported platforms are Linux and macOS.")
     try:
-        run(command)
+        if whole and sys.platform.startswith("linux"):
+            for node in reversed(_linux_disk_nodes(target)):
+                if any(node.get("mountpoints") or []):
+                    run(["udisksctl", "unmount", "-b", node["path"]])
+        else:
+            run(command)
     except DriveError as exc:
         raise DriveError("{}\nClose any apps or windows using the drive, then try again.".format(exc)) from exc
     return target

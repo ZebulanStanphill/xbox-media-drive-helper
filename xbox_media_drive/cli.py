@@ -5,14 +5,15 @@ import sqlite3
 import sys
 
 from . import DriveError, __version__
-from .devices import discover
+from .devices import discover, whole_disk, validate_whole_disk
+from .layout import analyze, read_head, restore_sector, switch
 from .native import load_library
 from .operations import inspect, journal_info, prepare, restore
 
 
 def parser():
     root = argparse.ArgumentParser(description="Prepare existing NTFS media for Xbox apps and restore original permissions. "
-                                   "No formatting or MBR/GPT edits.")
+                                   "Includes reversible whole-disk Xbox game/media signature switching; no formatting or repartitioning.")
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--json", action="store_true", help="Machine-readable result on stdout; progress/errors on stderr")
     root.add_argument("--library", help="Absolute path to a trusted libntfs-3g shared library")
@@ -22,6 +23,13 @@ def parser():
     sub.add_parser("gui", help="Open the desktop interface")
     info = sub.add_parser("journal", help="Inspect a recovery journal without opening the drive")
     info.add_argument("backup")
+    mode = sub.add_parser("mode", help="Inspect or reversibly switch a whole disk's Xbox game/media mode")
+    mode.add_argument("target", help="External whole disk")
+    action = mode.add_mutually_exclusive_group()
+    action.add_argument("--set", choices=("game", "media"))
+    action.add_argument("--restore", metavar="FILE", help="Restore a saved first sector")
+    mode.add_argument("--backup", help="New host-side first-sector backup (required with --set)")
+    mode.add_argument("--yes", action="store_true", help="Confirm the displayed disk noninteractively")
     for command in ("inspect", "prepare", "restore"):
         cmd = sub.add_parser(command, help={"inspect": "Read-only permission preflight",
                                            "prepare": "Grant Xbox app permissions with a recovery journal",
@@ -55,6 +63,28 @@ def main(argv=None):
                       "library": str(load_library(args.library)._name), "root": os.getuid() == 0}
         elif args.command == "journal":
             result = journal_info(args.backup)
+        elif args.command == "mode":
+            if args.set and not args.backup:
+                raise DriveError("--set requires --backup FILE.")
+            if args.backup and not args.set:
+                raise DriveError("--backup is only used with --set.")
+            writing = bool(args.set or args.restore)
+            disk = validate_whole_disk(args.target) if writing else whole_disk(args.target)
+            if writing:
+                if args.set:
+                    consequence = "unreadable here" if args.set == "game" else "unreadable by Xbox game storage"
+                    print("Switching to {} mode makes the drive {} until switched back.".format(args.set, consequence), file=sys.stderr)
+                else:
+                    print("Restoring the saved disk signature may make the drive unreadable here or by Xbox until switched back.", file=sys.stderr)
+                if not args.yes:
+                    if not sys.stdin.isatty():
+                        raise DriveError("Pass --yes after checking the target with mode.")
+                    print("Type the complete disk path {} to confirm: ".format(disk), end="", file=sys.stderr, flush=True)
+                    if input() != disk:
+                        raise DriveError("Confirmation did not match; no changes made.")
+                result = switch(disk, args.set, args.backup) if args.set else restore_sector(disk, args.restore)
+            else:
+                result = dict(analyze(read_head(disk)), disk=disk)
         else:
             if args.command in ("prepare", "restore") and not args.yes:
                 if not sys.stdin.isatty():

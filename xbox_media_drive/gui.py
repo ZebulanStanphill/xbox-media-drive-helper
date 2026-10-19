@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError
-from .devices import discover, is_mounted, unmount
+from .devices import discover, is_disk_mounted, is_mounted, unmount, whole_disk
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -101,11 +101,12 @@ class Worker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, arguments=None, listing=False, unmount=None):
+    def __init__(self, arguments=None, listing=False, unmount=None, whole=False):
         super().__init__()
         self.arguments = arguments
         self.listing = listing
         self.unmount = unmount
+        self.whole = whole
 
     def run(self):
         try:
@@ -113,7 +114,8 @@ class Worker(QThread):
                 self.done.emit({"devices": [device.to_dict() for device in discover()]})
             elif self.unmount:
                 # Unmounting needs no privileges, so it never goes through the elevated helper.
-                self.done.emit({"unmounted": unmount(self.unmount)})
+                target = unmount(self.unmount, whole=True) if self.whole else unmount(self.unmount)
+                self.done.emit({"unmounted": target})
             else:
                 # NTFS-3G's security API requires root for images as well as disks.
                 command = helper_command(self.arguments, elevate=True)
@@ -192,6 +194,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 780)
         self.worker = None
         self.inspection = None
+        self.disk_layout = None
+        self.mode_backup = None
         self.action = None
         self.followups = []
         root = QWidget()
@@ -210,7 +214,7 @@ class MainWindow(QMainWindow):
         intro_layout.setContentsMargins(17, 15, 17, 15)
         intro_layout.addWidget(label("NTFS stays NTFS", "section"))
         intro_layout.addWidget(label("Xbox media uses a normal NTFS volume. This tool adjusts app permissions and saves the "
-                                     "originals. File contents and the partition table stay intact.", "muted"))
+                                     "originals. File contents and partitions stay intact; game-drive mode changes only the disk's two-byte signature.", "muted"))
         layout.addWidget(intro)
 
         body = QHBoxLayout()
@@ -296,6 +300,37 @@ class MainWindow(QMainWindow):
         restore_scroll.setWidgetResizable(True)
         restore_scroll.setWidget(restore_tab)
         self.tabs.addTab(restore_scroll, "Restore permissions")
+
+        mode_tab = QWidget()
+        mode = QVBoxLayout(mode_tab)
+        mode.setSizeConstraint(QLayout.SetMinimumSize)
+        mode.setContentsMargins(0, 16, 0, 0)
+        mode.setSpacing(12)
+        mode.addWidget(label("An Xbox formats game drives as a normal GPT + NTFS disk but marks it with its own boot "
+                             "signature (99 CC instead of 55 AA), so Macs and PCs treat it as unreadable. Switching "
+                             "the signature is reversible and changes two bytes; files are untouched. Game packages "
+                             "stay encrypted; media mode only lets you see and copy them.", "muted"))
+        self.check_mode_button = QPushButton("Check drive mode")
+        self.check_mode_button.clicked.connect(self.check_drive_mode)
+        mode.addWidget(self.check_mode_button)
+        self.mode_status = label("Select a drive, then check its mode.", "muted")
+        self.mode_status.setTextFormat(Qt.PlainText)
+        mode.addWidget(self.mode_status)
+        self.switch_mode_button = QPushButton("Check drive mode first")
+        self.switch_mode_button.setObjectName("primary")
+        self.switch_mode_button.setEnabled(False)
+        self.switch_mode_button.clicked.connect(self.switch_drive_mode)
+        mode.addWidget(self.switch_mode_button)
+        self.restore_sector_button = QPushButton("Restore boot sector from backup…")
+        self.restore_sector_button.clicked.connect(self.restore_boot_sector)
+        mode.addWidget(self.restore_sector_button)
+        mode.addStretch()
+        mode_scroll = QScrollArea()
+        mode_scroll.setFrameShape(QFrame.NoFrame)
+        mode_scroll.setWidgetResizable(True)
+        mode_scroll.setWidget(mode_tab)
+        self.tabs.addTab(mode_scroll, "Game drive mode")
+        self.tabs.currentChanged.connect(self.update_unmount_button)
         right.addWidget(self.tabs, 1)
         library_label = label("Optional: trusted NTFS-3G library path", "muted")
         right.addWidget(library_label)
@@ -329,9 +364,10 @@ class MainWindow(QMainWindow):
         self.activity.setAccessibleName("Activity log")
         self.activity.setPlaceholderText("Operation results will appear here.")
         layout.addWidget(self.activity)
-        layout.addWidget(label("On your Xbox, choose “Use for Media” when prompted.", "muted"))
+        layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
-                         self.target, self.tabs, self.library]
+                         self.target, self.tabs, self.library, self.check_mode_button,
+                         self.switch_mode_button, self.restore_sector_button]
         if auto_refresh:
             self.refresh_devices()
 
@@ -342,14 +378,27 @@ class MainWindow(QMainWindow):
         self.inspection = None
         self.prepare_button.setEnabled(False)
         self.status.setText("Inspect this volume before preparing it.")
+        self.disk_layout = None
+        self.switch_mode_button.setEnabled(False)
+        self.switch_mode_button.setText("Check drive mode first")
+        self.mode_status.setText("Check this drive's mode before switching it.")
 
     def selected_device(self):
         item = self.drives.currentItem()
         return item.data(Qt.UserRole) if item else None
 
+    def listed_devices(self):
+        return [device for device in (self.drives.item(row).data(Qt.UserRole) for row in range(self.drives.count()))
+                if device]
+
     def update_unmount_button(self):
         device = self.selected_device()
-        self.unmount_button.setEnabled(self.worker is None and bool(device and device["mounted"]))
+        mounted = bool(device and device["mounted"])
+        if device and self.tabs.currentIndex() == 2:
+            # Game-drive mode works on the whole disk: any mounted volume on it counts.
+            mounted = any(other["mounted"] for other in self.listed_devices()
+                          if other.get("disk") and other.get("disk") == device.get("disk"))
+        self.unmount_button.setEnabled(self.worker is None and mounted)
 
     def select_drive(self, item, previous=None):
         if item:
@@ -366,25 +415,32 @@ class MainWindow(QMainWindow):
 
     def unmount_selected(self):
         device = self.selected_device()
-        if device and device["mounted"]:
+        if device and self.tabs.currentIndex() == 2:
+            try:
+                self.start("unmount", unmount=self.selected_disk(), whole=True)
+            except DriveError as exc:
+                QMessageBox.warning(self, "Cannot select disk", str(exc))
+        elif device and device["mounted"]:
             self.start("unmount", unmount=device["path"])
 
-    def offer_unmount(self, resume):
+    def offer_unmount(self, resume, whole=False, path=None):
         """If the target is mounted, offer to unmount it and then call resume. Returns True when it took over."""
-        path = self.target.text().strip()
+        path = path or self.target.text().strip()
         try:
-            mounted = is_mounted(path)
+            mounted = is_disk_mounted(path) if whole else is_mounted(path)
         except DriveError:
             return False
         if not mounted:
             return False
-        devices = [self.drives.item(row).data(Qt.UserRole) for row in range(self.drives.count())]
-        name = next((device["label"] or path for device in devices if device and device["path"] == path), path)
+        name = next((device["label"] or path for device in self.listed_devices() if device["path"] == path), path)
         question = ("{} is mounted. Unmount it now? The drive stays connected. "
                     "Don't use Eject in Finder — that disconnects it.".format(name))
-        if QMessageBox.question(self, "Unmount volume", question) == QMessageBox.Yes:
+        if QMessageBox.question(self, "Unmount disk" if whole else "Unmount volume", question) == QMessageBox.Yes:
             self.followups = [resume]
-            self.start("unmount", unmount=path)
+            if whole:
+                self.start("unmount", unmount=path, whole=True)
+            else:
+                self.start("unmount", unmount=path)
         else:
             self.log("{} is still mounted. Unmount it before continuing.".format(path))
         return True
@@ -456,13 +512,82 @@ class MainWindow(QMainWindow):
                 self.target.text(), backup)) == QMessageBox.Yes:
             self.start("restore", self.arguments("restore") + ["--backup", backup, "--yes"])
 
-    def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False):
+    def selected_disk(self):
+        """Use discovery's parent only when it still matches the editable target field."""
+        path = self.target.text().strip()
+        device = self.selected_device()
+        if device and device["path"] == path and device.get("disk"):
+            return device["disk"]
+        return whole_disk(path)
+
+    def check_drive_mode(self):
+        if not self.target.text().strip():
+            self.log("Choose a drive or enter its device path first.")
+            return
+        try:
+            disk = self.selected_disk()
+        except DriveError as exc:
+            QMessageBox.warning(self, "Cannot select disk", str(exc))
+            return
+        self.disk_layout = None
+        self.switch_mode_button.setEnabled(False)
+        self.start("check-mode", ["mode", disk])
+
+    def switch_drive_mode(self):
+        if not self.disk_layout or self.disk_layout.get("mode") not in ("game", "media"):
+            return
+        disk = self.disk_layout["disk"]
+        if self.offer_unmount(self.switch_drive_mode, whole=True, path=disk):
+            return
+        target = "media" if self.disk_layout["mode"] == "game" else "game"
+        default = str(Path.home() / ("xbox-disk-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".mbr"))
+        backup, _ = QFileDialog.getSaveFileName(self, "Save boot sector backup on your computer", default,
+                                               "Boot sector backup (*.mbr)", options=QFileDialog.DontConfirmOverwrite)
+        if backup and Path(backup).exists():
+            QMessageBox.warning(self, "Backup already exists",
+                                "{} already exists. Existing backups are never overwritten. Choose a new file name.".format(backup))
+            return
+        if not backup:
+            return
+        if target == "game":
+            message = ("This Mac/PC will no longer be able to read {} until you switch it back. "
+                       "If the drive was not formatted by an Xbox, the console may ask to format it, "
+                       "which erases everything on it — back up first.").format(disk)
+        else:
+            message = ("The Xbox will not recognise {} until you switch it back. "
+                       "Don't let the Xbox format it.").format(disk)
+        hint = "formatted by an Xbox" if self.disk_layout["xbox_formatted"] else "not formatted by an Xbox"
+        message += "\n\nDetected layout: {}.\nBoot sector backup: {}".format(hint, backup)
+        if QMessageBox.question(self, "Switch to {} mode".format(target), message) == QMessageBox.Yes:
+            self.mode_backup = backup
+            self.start("switch-mode", ["mode", disk, "--set", target, "--backup", backup, "--yes"])
+
+    def restore_boot_sector(self):
+        if not self.target.text().strip():
+            self.log("Choose the original whole disk first.")
+            return
+        try:
+            disk = self.selected_disk()
+        except DriveError as exc:
+            QMessageBox.warning(self, "Cannot select disk", str(exc))
+            return
+        if self.offer_unmount(self.restore_boot_sector, whole=True, path=disk):
+            return
+        backup, _ = QFileDialog.getOpenFileName(self, "Choose boot sector backup", str(Path.home()),
+                                               "Boot sector backup (*.mbr);;All files (*)")
+        if backup and QMessageBox.question(self, "Restore boot sector",
+                                          "Restore the boot sector on {} from {}? This restores the mode recorded "
+                                          "in the backup. Unplug and reconnect the drive afterward.".format(disk, backup)) == QMessageBox.Yes:
+            self.mode_backup = backup
+            self.start("restore-sector", ["mode", disk, "--restore", backup, "--yes"])
+
+    def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False, whole=False):
         if self.worker is not None:
             return
         if listing and not keep_inspection:
             self.invalidate()
         self.action = action
-        self.worker = Worker(arguments, listing, unmount)
+        self.worker = Worker(arguments, listing, unmount, whole)
         self.worker.done.connect(self.completed)
         self.worker.failed.connect(self.failed)
         self.worker.finished.connect(self.finished)
@@ -473,6 +598,12 @@ class MainWindow(QMainWindow):
             text = "Finding external volumes…"
         elif unmount:
             text = "Unmounting {}…".format(unmount)
+        elif action == "switch-mode":
+            text = "Switching {} to {} mode… Enter your administrator password if asked.".format(
+                arguments[1], arguments[arguments.index("--set") + 1])
+        elif action in ("check-mode", "restore-sector"):
+            text = "{} {}… Enter your administrator password if asked.".format(
+                "Checking drive mode on" if action == "check-mode" else "Restoring boot sector on", arguments[1])
         else:
             text = "{} {}… Enter your administrator password if asked.".format(
                 {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on"}[action],
@@ -520,6 +651,31 @@ class MainWindow(QMainWindow):
             self.status.setText(message)
             self.log(message)
             QApplication.alert(self)
+        elif self.action == "check-mode":
+            self.disk_layout = result
+            description = {"game": "Game mode (Xbox signature)", "media": "Media / PC mode (standard signature)"}.get(
+                result["mode"], "Unknown boot signature")
+            hint = "formatted by an Xbox" if result["xbox_formatted"] else "not formatted by an Xbox"
+            message = "{} · {} · {}".format(description, result["scheme"].upper(), hint)
+            self.mode_status.setText(message)
+            self.log(message)
+            self.update_mode_button()
+        elif self.action in ("switch-mode", "restore-sector"):
+            self.invalidate()
+            restored = self.action == "restore-sector"
+            title = "Boot sector restored" if restored else "Drive mode switched"
+            message = ("Restored the boot sector on {} to {} mode." if restored else
+                       "Changed the two boot signature bytes on {} to {} mode.").format(result["target"], result["mode"])
+            backup = result.get("backup", self.mode_backup)
+            if backup:
+                message += "\n\nBoot sector backup: {}".format(backup)
+            message += "\n\nUnplug and reconnect the drive so this computer re-reads it."
+            if sys.platform == "darwin":
+                message += "\nIf macOS says the disk is not readable, click Ignore."
+            self.log(message)
+            self.mode_status.setText(message)
+            self.report(QMessageBox.Information, title, message)
+            self.followups.append(self.refresh_devices)
         else:
             self.invalidate()
             if self.action == "prepare":
@@ -589,8 +745,16 @@ class MainWindow(QMainWindow):
         self.spinner.stop()
         self.busy.setText("")
         self.update_unmount_button()
+        self.update_mode_button()
         while self.followups and self.worker is None:
             self.followups.pop(0)()
+
+    def update_mode_button(self):
+        mode = self.disk_layout.get("mode") if self.disk_layout else None
+        allowed = mode in ("game", "media") and self.disk_layout.get("scheme") in ("gpt", "mbr")
+        self.switch_mode_button.setEnabled(self.worker is None and allowed)
+        if mode in ("game", "media"):
+            self.switch_mode_button.setText("Switch to {} mode…".format("media" if mode == "game" else "game"))
 
     def closeEvent(self, event):
         if self.worker is not None:
