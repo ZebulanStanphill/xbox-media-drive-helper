@@ -213,7 +213,6 @@ class MainWindow(QMainWindow):
         intro.setObjectName("panel")
         intro_layout = QVBoxLayout(intro)
         intro_layout.setContentsMargins(17, 15, 17, 15)
-        intro_layout.addWidget(label("NTFS stays NTFS", "section"))
         intro_layout.addWidget(label("Xbox media uses a normal NTFS volume. This tool adjusts app permissions and saves the "
                                      "originals. File contents and partitions stay intact; game-drive mode changes only the disk's two-byte signature.", "muted"))
         self.backup_warning = label("Back up the drive before using this app on it. Every change is recorded and reversible, "
@@ -225,7 +224,7 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         body.setSpacing(24)
         left = QVBoxLayout()
-        left.addWidget(label("01  Choose a volume", "section"))
+        left.addWidget(label("1. Choose a volume", "section"))
         self.drives = QListWidget()
         self.drives.setAccessibleName("External volumes")
         self.drives.setMinimumWidth(285)
@@ -247,7 +246,7 @@ class MainWindow(QMainWindow):
         body.addLayout(left, 2)
 
         right = QVBoxLayout()
-        right.addWidget(label("02  Prepare or restore", "section"))
+        right.addWidget(label("2. Prepare or restore", "section"))
         self.target = QLineEdit()
         self.target.setPlaceholderText("/dev/disk4s1 or /dev/sdb1")
         self.target.setAccessibleName("NTFS volume path")
