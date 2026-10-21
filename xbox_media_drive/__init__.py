@@ -1,6 +1,6 @@
 """Xbox media permissions and reversible whole-disk game-drive signatures."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 
 class DriveError(Exception):

@@ -15,7 +15,8 @@ from pathlib import Path
 from xbox_media_drive import DriveError
 from xbox_media_drive.native import Volume, load_library
 from xbox_media_drive.operations import inspect, prepare, restore
-from xbox_media_drive.security import signature
+from xbox_media_drive.security import AUTHENTICATED_USERS, Descriptor, MODIFY, acl_entries, signature
+from tests.test_security import ace, descriptor
 
 PREFIX = os.environ.get("XMD_TEST_PREFIX")
 HARNESS = os.environ.get("XMD_TEST_HARNESS")
@@ -74,7 +75,9 @@ class NativeImageTests(unittest.TestCase):
 
     def test_real_ntfs_permissions_round_trip_preserves_data_and_boot(self):
         before = Path(self.image).read_bytes()[:512]
-        with ImageVolume(self.image, library=self.library) as volume:
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            # Model content copied with no ordinary user grant.
+            volume.set("/Media/nested.mkv", descriptor([ace()]))
             originals = {entry.path: signature(volume.get(entry.path)) for entry in volume.walk()}
         read_only_hash = hashlib.sha256(Path(self.image).read_bytes()).digest()
         info = self.inspect()
@@ -87,6 +90,9 @@ class NativeImageTests(unittest.TestCase):
         prepared = prepare(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
         self.assertGreaterEqual(prepared["changed"], 3)
         self.assertEqual(self.inspect()["changes_needed"], 0)
+        with ImageVolume(self.image, library=self.library) as volume:
+            entries = acl_entries(Descriptor.parse(volume.get("/Media/nested.mkv")).dacl)
+            self.assertIn(ace(AUTHENTICATED_USERS, MODIFY), entries)
         self.assertEqual(self.tool("ntfscat", self.image, "/movie.mkv"), self.payload)
         self.assertEqual(self.tool("ntfscat", self.image, "/Media/nested.mkv"), self.payload)
         self.assertEqual(self.tool("ntfscat", self.image, "/alias.mkv"), self.payload)

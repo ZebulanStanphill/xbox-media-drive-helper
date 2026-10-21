@@ -265,8 +265,10 @@ class MainWindow(QMainWindow):
         self.access.addItem("Full control  ·  Compatibility option", "full")
         self.access.currentIndexChanged.connect(self.invalidate)
         prep.addWidget(self.access)
-        prep.addWidget(label("Grants ALL APPLICATION PACKAGES access to existing files and folders, "
-                             "with inheritance for new content created in Windows. This includes other packaged apps.", "muted"))
+        prep.addWidget(label("Grants ALL APPLICATION PACKAGES access to existing files and folders, and Authenticated "
+                             "Users the same access where the drive lacks it: Windows lets an app use only access granted "
+                             "to both the app and its user account. This includes other packaged apps and users. Folders "
+                             "pass it on to new content created in Windows.", "muted"))
         self.check = QPushButton("Inspect permissions")
         self.check.clicked.connect(self.inspect_volume)
         prep.addWidget(self.check)
@@ -499,7 +501,7 @@ class MainWindow(QMainWindow):
             return
         journal_message = ("Add {} objects to journal: {}" if append else "{} objects need changes.\nRecovery journal: {}").format(
             self.inspection["changes_needed"], backup)
-        message = "Grant app access on {}?\n\nBack up the drive first if you haven't.\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the app grant ALL APPLICATION PACKAGES must be removed manually in Windows.".format(
+        message = "Grant app access on {}?\n\nBack up the drive first if you haven't.\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the ALL APPLICATION PACKAGES and Authenticated Users entries added by this app must be removed manually in Windows.".format(
             self.target.text(), journal_message)
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,

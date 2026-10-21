@@ -139,6 +139,14 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
                             if signature(desired) != signature(row["prepared"]):
                                 raise DriveError("{}: recorded in this journal with a different access level. "
                                                  "Prepare with a new journal.".format(entry.path))
+                        elif row["applied"] and (signature(raw) == signature(row["prepared"])
+                                                 or lost_auto_inherited(signature(raw), signature(row["prepared"]))):
+                            if get_meta(db, "access") != access:
+                                raise DriveError("{}: recorded in this journal with a different access level. "
+                                                 "Prepare with a new journal.".format(entry.path))
+                            raise DriveError("{}: prepared by an earlier version that didn't grant Authenticated Users. "
+                                             "Prepare with a new journal; to undo later, restore with the new journal "
+                                             "first, then this one.".format(entry.path))
                         else:
                             raise DriveError("{}: its permissions changed since this journal recorded it. "
                                              "Prepare with a new journal.".format(entry.path))

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from xbox_media_drive import DriveError
 from xbox_media_drive.native import Entry
 from xbox_media_drive.operations import inspect, journal, journal_info, prepare, put_meta, restore
-from xbox_media_drive.security import grant, signature
+from xbox_media_drive.security import APP_PACKAGES, MODIFY, grant, signature
 from tests.test_security import ace, descriptor
 
 
@@ -186,6 +186,26 @@ class OperationTests(unittest.TestCase):
             self.prepare(append=True)
         self.assertFalse(Path(self.backup).exists())
 
+    def test_append_rejects_earlier_app_only_grant_before_any_writes(self):
+        self.prepare()
+        # An earlier preparation recorded only the app grant. A new object is planned first.
+        later = descriptor([ace()])
+        self.volume.files = {"/new.mkv": [72, False, later], **self.volume.files}
+        prepared = descriptor([ace(), ace(APP_PACKAGES, MODIFY, 3)], control=0x9404)
+        for lost_bit in (False, True):
+            with self.subTest(lost_auto_inherited=lost_bit):
+                self.volume.files["/"][2] = (prepared[:2] + struct.pack("<H", 0x9004) + prepared[4:]
+                                               if lost_bit else prepared)
+                with journal(self.backup) as db:
+                    db.execute("UPDATE entries SET prepared=? WHERE path='/'", (prepared,))
+                    db.commit()
+                with self.assertRaisesRegex(DriveError, "^/: prepared by an earlier version.*Authenticated Users.*"
+                                                       "new journal.*restore with the new journal first, then this one"):
+                    self.prepare(append=True)
+                self.assertEqual(self.volume.writes, 3)
+                self.assertEqual(self.volume.get("/new.mkv"), later)
+                self.assertEqual(journal_info(self.backup)["state"], "prepared")
+
     def test_append_journals_all_new_objects_durably_before_first_write(self):
         self.prepare()
         for ref in (72, 73):
@@ -269,6 +289,12 @@ class OperationTests(unittest.TestCase):
         with self.assertRaisesRegex(DriveError, "different access level"):
             self.prepare(append=True, access="full")
         self.assertEqual(self.volume.writes, 0)
+
+    def test_append_applied_row_rejects_different_access(self):
+        self.prepare()
+        with self.assertRaisesRegex(DriveError, "different access level"):
+            self.prepare(append=True, access="full")
+        self.assertEqual(self.volume.writes, 3)
 
     def test_append_marks_legacy_unmarked_write_without_rewriting(self):
         self.prepare()

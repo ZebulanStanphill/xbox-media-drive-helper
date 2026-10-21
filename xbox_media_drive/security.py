@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from . import DriveError
 
 APP_PACKAGES = bytes.fromhex("010200000000000f0200000001000000")
+AUTHENTICATED_USERS = bytes.fromhex("01010000000000050b000000")
+EVERYONE = bytes.fromhex("010100000000000100000000")
 MODIFY = 0x001301BF
 FULL = 0x001F01FF
 RIGHTS = {"modify": MODIFY, "full": FULL}
@@ -139,8 +141,8 @@ def grant(raw, directory, access="modify"):
     entries = acl_entries(sd.dacl)
     inherited_seen = False
     mask = RIGHTS[access]
-    allowed = 0
-    inherited_allowed = 0
+    allowed = [0, 0]
+    inherited_allowed = [0, 0]
     for ace in entries:
         if ace[0] not in (0, 1) or len(ace) < 16:
             raise DriveError("Complex ACL found; automatic editing is refused. Review it in Windows.")
@@ -152,21 +154,24 @@ def grant(raw, directory, access="modify"):
         if inherited_seen and not ace[1] & INHERITED:
             raise DriveError("Noncanonical ACL found; review its inheritance in Windows.")
         inherited_seen |= bool(ace[1] & INHERITED)
-        if sid == APP_PACKAGES:
+        if sid in (APP_PACKAGES, EVERYONE, AUTHENTICATED_USERS):
+            side = 0 if sid == APP_PACKAGES else 1
             rights = struct.unpack_from("<I", ace, 4)[0]
             for generic, specific in GENERIC_RIGHTS:
                 if rights & generic:
                     rights |= specific
             if not ace[1] & INHERIT_ONLY:
-                allowed |= rights
+                allowed[side] |= rights
             if ace[1] & 3 == 3 and not ace[1] & 4:  # OI, CI; no NO_PROPAGATE
-                inherited_allowed |= rights
-    if allowed & mask == mask and (not directory or inherited_allowed & mask == mask):
+                inherited_allowed[side] |= rights
+    missing = [sid for side, sid in enumerate((APP_PACKAGES, AUTHENTICATED_USERS))
+               if allowed[side] & mask != mask or directory and inherited_allowed[side] & mask != mask]
+    if not missing:
         return raw
-    ace = struct.pack("<BBHI", 0, 3 if directory else 0, 8 + len(APP_PACKAGES), mask) + APP_PACKAGES
+    additions = [struct.pack("<BBHI", 0, 3 if directory else 0, 8 + len(sid), mask) + sid for sid in missing]
     # Canonical explicit allow position, before inherited ACEs.
     index = next((i for i, value in enumerate(entries) if value[1] & INHERITED), len(entries))
-    entries.insert(index, ace)
+    entries[index:index] = additions
     size = 8 + sum(map(len, entries))
     if size > 65535 or len(entries) > 65535:
         raise DriveError("NTFS ACL is too large for another permission entry.")
