@@ -30,18 +30,15 @@ Preparation and restoration therefore remain host-side operations on Linux/macOS
 
 ### macOS application
 
-Self-contained apps for **macOS 15.8 or later** are built in `dist/macos/`:
+A self-contained **Universal** app for **macOS 15.8 or later** is built in `dist/macos/` as `Xbox-Media-Drive-Helper-<version>-universal.dmg`. It runs natively on both Apple silicon (M-series Macs) and Intel Macs. It is universal because macOS 27 warns about Intel-only apps, and macOS 28 won't open them on Apple silicon.
 
-- `Xbox-Media-Drive-Helper-<version>-arm64.dmg` for Apple silicon (M-series Macs).
-- `Xbox-Media-Drive-Helper-<version>-x86_64.dmg` for Intel Macs.
-
-Open the matching disk image, drag **Xbox Media Drive Helper.app** to **Applications**, then launch the installed copy. Python, Qt and NTFS-3G are bundled; no Python, Homebrew or FUSE installation is needed on those Macs. The CLI is also included inside the app. See [macOS packaging and verification](docs/macos-app.md).
+Open the disk image, drag **Xbox Media Drive Helper.app** to **Applications**, then launch the installed copy. Python, Qt and NTFS-3G are bundled; no Python, Homebrew or FUSE installation is needed on those Macs. The CLI is also included inside the app. See [macOS packaging and verification](docs/macos-app.md).
 
 The local builds are ad-hoc signed, not Apple notarized. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway** after attempting to open the installed app. [Apple's instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)
 
 Disk operations also need **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access → Xbox Media Drive Helper), then a relaunch. Without it macOS blocks raw drive access even for the administrator helper; the app offers to open that pane. Because builds are ad-hoc signed, re-enable the setting after installing a new build.
 
-The bundle minimum OS and every bundled Mach-O deployment target are checked against 15.8. Runtime checks are performed on the available build Mac; this is not a claim of testing on macOS 15.8 itself. Architecture-specific verification reports accompany the builds.
+The bundle minimum OS and every bundled Mach-O deployment target are checked against 15.8. Runtime checks are performed on the available build Mac; this is not a claim of testing on macOS 15.8 itself. Verification reports for the universal build accompany it.
 
 ### From source / Linux
 

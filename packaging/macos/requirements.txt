@@ -1,4 +1,4 @@
-# These versions supply universal2 Python extension/Qt binaries for both builds.
+# These versions supply universal2 Python extension/Qt binaries for the universal build.
 PyInstaller==6.22.3
 PySide6-Essentials==6.9.3
 shiboken6==6.9.3

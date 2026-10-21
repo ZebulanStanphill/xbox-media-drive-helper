@@ -1,15 +1,17 @@
 # Installable macOS applications
 
 The release builds contain a complete Python runtime, Qt interface, NTFS-3G
-security library and CLI. The minimum OS is **macOS 15.8**, for both architectures.
+security library and CLI. The minimum OS is **macOS 15.8**. A single Universal 2
+app serves both Apple silicon and Intel Macs.
 They do not depend on a development checkout, a system Python, Homebrew or FUSE.
 
 ## Installation
 
-Choose `arm64` for an Apple silicon Mac or `x86_64` for an Intel Mac. The disk
-images are in `dist/macos/`. Open the matching `.dmg`, drag the app to
-Applications, and open the installed copy. To uninstall, quit it and move the
-app to the Trash; keep any recovery journals you still need.
+Use the `Xbox-Media-Drive-Helper-<version>-universal.dmg` disk image in
+`dist/macos/`. It works on both Apple silicon and Intel Macs, with no architecture
+choice needed; each Mac runs the native slice of the universal app. Open the
+`.dmg`, drag the app to Applications, and open the installed copy. To uninstall,
+quit it and move the app to the Trash; keep any recovery journals you still need.
 
 These local builds use ad-hoc code signatures. There is no Developer ID signing
 identity or notarization credential configured on the build machine. If macOS
@@ -51,18 +53,21 @@ On a macOS build machine with Command Line Tools, `make`, `pkg-config` and `curl
 
 ```sh
 python3 scripts/build-macos.py
-# Build only one architecture:
-python3 scripts/build-macos.py --arch arm64
-python3 scripts/build-macos.py --arch x86_64
 ```
 
 The script downloads the Python Software Foundation's signed **3.13.16
 universal2 installer**, checks its pinned SHA-256 digest and package signature,
 and extracts it under `build/macos-tools/`. It does not install Python system-wide.
 It makes this extracted interpreter relocatable for build subprocesses, installs
-the pinned packaging dependencies, builds architecture-specific NTFS-3G libraries,
-and freezes separate app bundles with PyInstaller. `--skip-native-build` reuses
-previously built libraries, but all final bundle verification still runs.
+the pinned packaging dependencies, builds the NTFS-3G library for both
+architectures, and freezes one Universal 2 app bundle with PyInstaller.
+`--skip-native-build` reuses previously built libraries, but all final bundle
+verification still runs.
+
+The universal app contains an Apple silicon (`arm64`) slice and an Intel
+(`x86_64`) slice. The Intel slice is used on Intel Macs. On an Apple silicon build
+machine, the Intel slice can run only through Rosetta, so those checks are not a
+test on physical Intel hardware.
 
 NTFS-3G is compiled with a macOS **15.0** deployment target, earlier than the
 required **15.8** runtime. Python and Qt have earlier deployment targets too.
@@ -84,18 +89,19 @@ advertising the release as notarized.
 For each bundle, `scripts/verify-macos.py`:
 
 1. Checks `LSMinimumSystemVersion` is `15.8`.
-2. Examines every bundled Mach-O file and requires the intended single CPU
-   architecture and a deployment target no newer than 15.8.
+2. Examines every bundled Mach-O file and requires the `arm64` and `x86_64`
+   slices in universal files, with a deployment target no newer than 15.8.
 3. Rejects library dependencies and runtime search paths pointing to the build
    machine or other non-system absolute locations.
 4. Verifies the complete app's code signature.
 5. Copies the app into an independent path containing spaces, clears build/Python
    loader environment variables, and runs its bundled CLI and real Qt rendering
    checks using both the offscreen and native Cocoa plugins from an unrelated
-   working directory.
+   working directory, once for each slice the host can execute.
 6. Confirms the NTFS library came from inside the relocated bundle.
 
-The JSON reports record the actual test OS and host CPU. An Intel binary tested
+The JSON reports record the required slices, runtime-tested slices, actual test
+OS and host CPU. An Intel slice tested
 through Rosetta on Apple silicon is not a physical Intel Mac test. Deployment
 target verification is not a runtime test on macOS 15.8; that remains an explicit
 validation gap. No packaging verification changes any physical drive.
@@ -103,13 +109,12 @@ validation gap. No packaging verification changes any physical drive.
 Re-run verification independently:
 
 ```sh
-python3 scripts/verify-macos.py 'dist/macos/arm64/Xbox Media Drive Helper.app' --arch arm64
-python3 scripts/verify-macos.py 'dist/macos/x86_64/Xbox Media Drive Helper.app' --arch x86_64
+python3 scripts/verify-macos.py 'dist/macos/universal2/Xbox Media Drive Helper.app' --arch universal2
 ```
 
-Running the other architecture requires OS support for executing it (Rosetta
-for Intel checks on Apple silicon). The build script also verifies both compressed
-disk images and emits SHA-256 checksums and a corresponding-source archive.
+Running the Intel slice on Apple silicon requires Rosetta. The build script also
+verifies the compressed disk image and emits SHA-256 checksums and a
+corresponding-source archive.
 
 ## Redistribution
 

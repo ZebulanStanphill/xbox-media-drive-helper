@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build self-contained, architecture-specific .app bundles and drag-to-install DMGs.
+"""Build a self-contained universal2 .app bundle and drag-to-install DMG.
 
 All downloaded tools are extracted into build/; no system Python is installed.
 Requires macOS, Command Line Tools, make, pkg-config and curl.
@@ -155,7 +155,6 @@ def source_archive(destination, ntfs_source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arch", choices=("arm64", "x86_64", "both"), default="both")
     parser.add_argument("--codesign-identity", help="Optional Developer ID Application signing identity")
     parser.add_argument("--skip-native-build", action="store_true", help="Reuse architecture-specific native libraries")
     parser.add_argument("--skip-dmg", action="store_true", help="Build and verify .app bundles without disk images")
@@ -172,40 +171,58 @@ def main():
     download("https://tuxera.com/opensource/" + ntfs_source.name, ntfs_source, NTFS_SHA256)
     dist = ROOT / "dist/macos"
     dist.mkdir(parents=True, exist_ok=True)
-    architectures = ("arm64", "x86_64") if args.arch == "both" else (args.arch,)
+    architectures = ("arm64", "x86_64")
+    host = platform.machine()
+    runtime_architectures = [host] if host in architectures else []
+    if host == "arm64" and subprocess.run(["/usr/bin/arch", "-x86_64", "/usr/bin/true"],
+                                           capture_output=True).returncode == 0:
+        runtime_architectures.append("x86_64")
+    if not runtime_architectures:
+        raise RuntimeError("No native slice can be runtime tested on this host")
+    natives = []
     for architecture in architectures:
         prefix = ROOT / "build/macos-native" / architecture
         if not args.skip_native_build:
             run([sys.executable, ROOT / "scripts/build-native.py", "--prefix", prefix, "--arch", architecture,
                  "--min-macos", "15.0", "--archive", ntfs_source])
-        run(["/usr/bin/arch", "-" + architecture, python, ROOT / "scripts/test-native.py", prefix,
-             "--compiler-arch", platform.machine()], env=env)
-        native = (prefix / "lib/libntfs-3g.dylib").resolve(strict=True)
-        build_env = dict(env, XMD_MACOS_ARCH=architecture, XMD_MACOS_NATIVE=str(native), XMD_VERSION=APP_VERSION)
-        if args.codesign_identity:
-            build_env["XMD_CODESIGN_IDENTITY"] = args.codesign_identity
-        run([python, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", dist / architecture,
-             "--workpath", ROOT / "build/pyinstaller" / architecture,
-             ROOT / "packaging/macos/XboxMediaDrive.spec"], env=build_env)
-        app = dist / architecture / "Xbox Media Drive Helper.app"
-        report = dist / architecture / "verification.json"
-        # Deliberately use the caller's ordinary Python/environment for verification,
-        # so the app cannot accidentally rely on the extracted build interpreter.
-        run([sys.executable, ROOT / "scripts/verify-macos.py", app, "--arch", architecture, "--output", report])
-        if not args.skip_dmg:
-            stage = ROOT / "build/dmg-stage" / architecture
-            if stage.exists():
-                shutil.rmtree(stage)
-            stage.mkdir(parents=True)
-            run(["ditto", app, stage / app.name])
-            (stage / "Applications").symlink_to("/Applications", target_is_directory=True)
-            shutil.copyfile(ROOT / "packaging/macos/INSTALL.txt", stage / "INSTALL.txt")
-            shutil.copyfile(ROOT / "packaging/macos/THIRD_PARTY_NOTICES.md", stage / "THIRD_PARTY_NOTICES.md")
-            shutil.copyfile(report, stage / "verification.json")
-            image = dist / "Xbox-Media-Drive-Helper-{}-{}.dmg".format(APP_VERSION, architecture)
-            run(["hdiutil", "create", "-ov", "-format", "UDZO", "-volname", "Xbox Media Drive Helper",
-                 "-srcfolder", stage, image])
-            run(["hdiutil", "verify", image])
+        if architecture in runtime_architectures:
+            run(["/usr/bin/arch", "-" + architecture, python, ROOT / "scripts/test-native.py", prefix,
+                 "--compiler-arch", host], env=env)
+        natives.append((prefix / "lib/libntfs-3g.dylib").resolve(strict=True))
+    print("Native runtime tested slices: " + ", ".join(runtime_architectures), flush=True)
+    if natives[0].name != natives[1].name:
+        raise RuntimeError("Native library filenames differ between architectures")
+    native = ROOT / "build/macos-native/universal2" / natives[0].name
+    native.parent.mkdir(parents=True, exist_ok=True)
+    run(["lipo", "-create", *natives, "-output", native])
+    slices = subprocess.check_output(["lipo", "-archs", str(native)], text=True).split()
+    if sorted(slices) != sorted(architectures):
+        raise RuntimeError("Wrong universal native library architectures: " + str(slices))
+    build_env = dict(env, XMD_MACOS_ARCH="universal2", XMD_MACOS_NATIVE=str(native), XMD_VERSION=APP_VERSION)
+    if args.codesign_identity:
+        build_env["XMD_CODESIGN_IDENTITY"] = args.codesign_identity
+    run([python, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", dist / "universal2",
+         "--workpath", ROOT / "build/pyinstaller/universal2",
+         ROOT / "packaging/macos/XboxMediaDrive.spec"], env=build_env)
+    app = dist / "universal2/Xbox Media Drive Helper.app"
+    report = dist / "universal2/verification.json"
+    # Deliberately use the caller's ordinary Python/environment for verification,
+    # so the app cannot accidentally rely on the extracted build interpreter.
+    run([sys.executable, ROOT / "scripts/verify-macos.py", app, "--arch", "universal2", "--output", report])
+    if not args.skip_dmg:
+        stage = ROOT / "build/dmg-stage/universal2"
+        if stage.exists():
+            shutil.rmtree(stage)
+        stage.mkdir(parents=True)
+        run(["ditto", app, stage / app.name])
+        (stage / "Applications").symlink_to("/Applications", target_is_directory=True)
+        shutil.copyfile(ROOT / "packaging/macos/INSTALL.txt", stage / "INSTALL.txt")
+        shutil.copyfile(ROOT / "packaging/macos/THIRD_PARTY_NOTICES.md", stage / "THIRD_PARTY_NOTICES.md")
+        shutil.copyfile(report, stage / "verification.json")
+        image = dist / "Xbox-Media-Drive-Helper-{}-universal.dmg".format(APP_VERSION)
+        run(["hdiutil", "create", "-ov", "-format", "UDZO", "-volname", "Xbox Media Drive Helper",
+             "-srcfolder", stage, image])
+        run(["hdiutil", "verify", image])
     sources = dist / "Xbox-Media-Drive-Helper-{}-source.tar.gz".format(APP_VERSION)
     source_archive(sources, ntfs_source)
     checksums = []

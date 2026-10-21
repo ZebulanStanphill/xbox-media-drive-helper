@@ -1,7 +1,8 @@
 Xbox Media Drive Helper
 Requires macOS 15.8 or later.
 
-Choose Apple silicon (arm64) for M-series Macs, or Intel (x86_64) for Intel Macs.
+This universal app runs natively on both Apple silicon and Intel Macs; no
+architecture choice is needed.
 Open the disk image and drag Xbox Media Drive Helper.app to Applications.
 Open the installed copy, rather than running it from the disk image.
 Python, Qt and NTFS-3G are included; Homebrew and FUSE are not required.
