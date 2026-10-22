@@ -13,7 +13,7 @@ try:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox, QStyle
-    from xbox_media_drive.gui import MainWindow, app_icon, configure, helper_command, parse_helper_output
+    from xbox_media_drive.gui import MainWindow, PRIVACY_SETTINGS, app_icon, configure, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -29,6 +29,8 @@ class GUITests(unittest.TestCase):
         configure(cls.app)
 
     def setUp(self):
+        self.probe = patch("xbox_media_drive.gui.mac_full_disk_access", return_value=None).start()
+        self.addCleanup(patch.stopall)
         self.window = MainWindow(auto_refresh=False)
         self.window.show()
         self.app.processEvents()
@@ -51,6 +53,39 @@ class GUITests(unittest.TestCase):
         # The static question convenience function creates a box with this same icon enum.
         self.assertEqual(self.app.style().standardIcon(QStyle.SP_MessageBoxQuestion).cacheKey(),
                          app_icon().cacheKey())
+
+    def test_disk_access_notice_at_construction(self):
+        for result in (True, None, False):
+            with self.subTest(result=result):
+                self.probe.return_value = result
+                window = MainWindow(auto_refresh=False)
+                self.assertEqual(window.disk_access_notice.isHidden(), result is not False)
+                window.close()
+                window.deleteLater()
+
+    def test_disk_access_notice_rechecks_on_activation(self):
+        self.probe.return_value = False
+        self.window.application_state_changed(Qt.ApplicationActive)
+        self.assertTrue(self.window.disk_access_notice.isVisible())
+        self.probe.return_value = True
+        self.probe.reset_mock()
+        self.window.application_state_changed(Qt.ApplicationInactive)
+        self.probe.assert_not_called()
+        self.window.application_state_changed(Qt.ApplicationActive)
+        self.probe.assert_called_once_with()
+        self.assertTrue(self.window.disk_access_notice.isHidden())
+
+    def test_disk_access_notice_opens_settings(self):
+        with patch("xbox_media_drive.gui.subprocess.run") as run:
+            self.window.privacy_settings.click()
+            run.assert_called_once_with(["open", PRIVACY_SETTINGS])
+
+    def test_disk_access_failure_shows_notice_and_keeps_dialog(self):
+        with patch("sys.platform", "darwin"), patch.object(self.window, "report") as report:
+            self.window.failed("Enable Full Disk Access")
+            self.assertTrue(self.window.disk_access_notice.isVisible())
+            report.assert_called_once_with(QMessageBox.Warning, "Disk access needed",
+                                           "Enable Full Disk Access", settings=True)
 
     def wheel(self, widget, delta):
         position = widget.rect().center()

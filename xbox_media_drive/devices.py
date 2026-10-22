@@ -20,6 +20,17 @@ MAC_DISK_ACCESS = ("macOS blocked access to {}. Open System Settings → Privacy
                    "and try again.")
 
 
+def mac_full_disk_access():
+    if sys.platform != "darwin":
+        return None
+    try:
+        # The system TCC database tests Full Disk Access without prompting for consent.
+        with open("/Library/Application Support/com.apple.TCC/TCC.db", "rb"):
+            return True
+    except OSError as exc:
+        return False if exc.errno == errno.EPERM else None
+
+
 def run(args):
     try:
         result = subprocess.run(args, capture_output=True, check=True, timeout=30)

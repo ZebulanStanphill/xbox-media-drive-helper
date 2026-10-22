@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import plistlib
@@ -7,14 +8,29 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.devices import discover, identity, is_mounted, linux_nodes, unmount, validate_target
+from xbox_media_drive.devices import mac_full_disk_access, discover, identity, is_mounted, linux_nodes, unmount, validate_target
 from tests.test_operations import make_boot
 
 
 class DeviceTests(unittest.TestCase):
+    def test_mac_full_disk_access(self):
+        with patch("sys.platform", "linux"), patch("builtins.open") as opened:
+            self.assertIsNone(mac_full_disk_access())
+            opened.assert_not_called()
+        with patch("sys.platform", "darwin"), patch("builtins.open", mock_open()) as opened:
+            self.assertIs(mac_full_disk_access(), True)
+            opened.assert_called_once_with("/Library/Application Support/com.apple.TCC/TCC.db", "rb")
+            opened().__exit__.assert_called_once()
+        for error, expected in ((PermissionError(errno.EPERM, "denied"), False),
+                                (FileNotFoundError(errno.ENOENT, "missing"), None),
+                                (PermissionError(errno.EACCES, "denied"), None)):
+            with self.subTest(error=error), patch("sys.platform", "darwin"), \
+                    patch("builtins.open", side_effect=error):
+                self.assertIs(mac_full_disk_access(), expected)
+
     def test_volume_identity_requires_ntfs_boot_sector(self):
         with tempfile.TemporaryDirectory() as folder:
             image = Path(folder) / "volume.img"

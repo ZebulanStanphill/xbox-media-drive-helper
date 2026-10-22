@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                               QListWidgetItem, QMainWindow, QMessageBox,
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError
-from .devices import discover, is_disk_mounted, is_mounted, unmount, whole_disk
+from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -30,6 +30,8 @@ QLabel#warning { color: #f3c969; font-weight: 600; }
 QLabel#busy { color: #a6e7b8; font-weight: 600; }
 QFrame#panel { border: 1px solid #2c3b31; border-radius: 12px; background: #151e18; }
 QFrame#panel QLabel, QFrame#panel QWidget { background: transparent; }
+QLabel#notice { color: #f3c969; }
+QFrame#panel QFrame#divider { background: #2c3b31; }
 QPushButton { background: #233027; border: 1px solid #3a4c40; border-radius: 7px; padding: 10px 15px; font-weight: 600; }
 QPushButton:hover { background: #304336; }
 QPushButton:disabled { color: #4f5c53; background: #141b16; border-color: #1f2922; }
@@ -258,6 +260,26 @@ class MainWindow(QMainWindow):
         intro.setObjectName("panel")
         intro_layout = QVBoxLayout(intro)
         intro_layout.setContentsMargins(17, 15, 17, 15)
+        # Inside the intro panel rather than a panel of its own, so the drive list still fits at the minimum size.
+        self.disk_access_notice = QWidget()
+        notice_layout = QVBoxLayout(self.disk_access_notice)
+        notice_layout.setContentsMargins(0, 0, 0, 0)
+        notice_row = QHBoxLayout()
+        notice_row.setSpacing(14)
+        notice_row.addWidget(label(
+            "macOS is blocking this app from reading drives. Turn on Xbox Media Drive Helper in Full Disk Access "
+            "(add it with + if needed), then quit and reopen the app. Already on? Turn it off and on again: "
+            "macOS treats each new build as a new app.", "notice"), 1)
+        self.privacy_settings = QPushButton("Open Privacy Settings")
+        self.privacy_settings.clicked.connect(self.open_privacy_settings)
+        notice_row.addWidget(self.privacy_settings)
+        notice_layout.addLayout(notice_row)
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedHeight(1)
+        notice_layout.addWidget(divider)
+        self.disk_access_notice.hide()
+        intro_layout.addWidget(self.disk_access_notice)
         intro_layout.addWidget(label("Xbox media uses a normal NTFS volume. This tool adjusts app permissions and saves the "
                                      "originals. File contents and partitions stay intact; game-drive mode changes only the disk's two-byte signature.", "muted"))
         self.backup_warning = label("Back up the drive before using this app on it. Every change is recorded and reversible, "
@@ -418,8 +440,20 @@ class MainWindow(QMainWindow):
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
                          self.tabs, self.library, self.check_mode_button,
                          self.switch_mode_button, self.restore_sector_button]
+        self.check_disk_access()
+        QGuiApplication.instance().applicationStateChanged.connect(self.application_state_changed)
         if auto_refresh:
             self.refresh_devices()
+
+    def check_disk_access(self):
+        self.disk_access_notice.setVisible(mac_full_disk_access() is False)
+
+    def application_state_changed(self, state):
+        if state == Qt.ApplicationActive:
+            self.check_disk_access()
+
+    def open_privacy_settings(self):
+        subprocess.run(["open", PRIVACY_SETTINGS])
 
     def log(self, text):
         self.activity.appendPlainText(datetime.now().strftime("%H:%M") + "  " + text)
@@ -803,7 +837,7 @@ class MainWindow(QMainWindow):
             button = box.addButton("Open Privacy Settings", QMessageBox.AcceptRole) if settings else None
             box.exec()
             if button is not None and box.clickedButton() is button:
-                subprocess.run(["open", PRIVACY_SETTINGS])
+                self.open_privacy_settings()
         self.followups.append(show)
 
     def failed(self, message):
@@ -814,6 +848,7 @@ class MainWindow(QMainWindow):
         if self.action in ("prepare", "restore"):
             message += "\n\nIf preparation started, keep its recovery journal and use Restore permissions."
         if sys.platform == "darwin" and "Full Disk Access" in message:
+            self.disk_access_notice.show()
             self.report(QMessageBox.Warning, "Disk access needed", message, settings=True)
         else:
             self.report(QMessageBox.Warning, "Operation could not complete", message)

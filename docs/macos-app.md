@@ -27,10 +27,10 @@ image, before using disk operations.
 Disk operations need **Full Disk Access**: macOS privacy protection blocks raw
 access to external drives otherwise, even for the administrator helper. Turn on
 Xbox Media Drive Helper in System Settings > Privacy & Security > Full Disk
-Access, then quit and reopen it. The app offers to open that pane when access is
-blocked. Builds are ad-hoc signed, so macOS treats each new build as a different
-app: turn the setting off and on again (or remove and re-add the app) after
-installing an update.
+Access, then quit and reopen it. The app warns at launch when access is missing
+and offers to open that pane. Builds are ad-hoc signed, so macOS treats each new
+build as a different app: turn the setting off and on again (or remove and re-add
+the app) after installing an update.
 
 macOS mounts NTFS drives automatically. In the app, click **Unmount** on the
 selected volume rather than Ejecting it in Finder: Eject disconnects the drive,
