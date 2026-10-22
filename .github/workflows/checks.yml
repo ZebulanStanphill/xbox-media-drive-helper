@@ -19,6 +19,7 @@ jobs:
       - run: python -m unittest discover -v
         env:
           QT_QPA_PLATFORM: offscreen
-      - run: python scripts/build-native.py > native-build.log 2>&1
+      # Quiet unless the build fails; then show why.
+      - run: python scripts/build-native.py > native-build.log 2>&1 || { tail -n 200 native-build.log; exit 1; }
       - run: python scripts/test-native.py .native
       - run: python -m xbox_media_drive --json doctor
