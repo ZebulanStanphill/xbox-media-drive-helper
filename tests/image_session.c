@@ -13,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <ntfs-3g/volume.h>
+#include <ntfs-3g/attrib.h>
 #include <ntfs-3g/security.h>
 #include <ntfs-3g/unistr.h>
 
@@ -77,6 +78,24 @@ int xmd_fixture_link(struct SECURITY_API *api, const char *existing, const char 
     if (file && ntfs_inode_close(file))
         result = -1;
     if (root && ntfs_inode_close(root))
+        result = -1;
+    return result;
+}
+
+/* Invalidate restart pages without making the journal an empty attribute. */
+int xmd_fixture_open_journal(struct SECURITY_API *api)
+{
+    char zeros[4096] = {0};
+    ntfs_inode *inode = ntfs_inode_open(api->security.vol, FILE_LogFile);
+    if (!inode)
+        return -1;
+    ntfs_attr *attr = ntfs_attr_open(inode, AT_DATA, AT_UNNAMED, 0);
+    int result = -1;
+    if (attr) {
+        result = ntfs_attr_pwrite(attr, 0, sizeof(zeros), zeros) == sizeof(zeros) ? 0 : -1;
+        ntfs_attr_close(attr);
+    }
+    if (ntfs_inode_close(inode))
         result = -1;
     return result;
 }

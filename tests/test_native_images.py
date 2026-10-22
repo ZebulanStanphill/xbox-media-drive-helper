@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.native import Volume, load_library
+from xbox_media_drive.native import Volume
 from xbox_media_drive.operations import inspect, prepare, restore
 from xbox_media_drive.security import AUTHENTICATED_USERS, Descriptor, MODIFY, acl_entries, signature
 from tests.test_security import ace, descriptor
@@ -23,16 +23,11 @@ HARNESS = os.environ.get("XMD_TEST_HARNESS")
 
 
 class ImageVolume(Volume):
-    def __init__(self, target, writable=False, library=None):
-        self.lib = load_library(library)
-        self.writable = writable
+    def _initialize(self, target, flags):
         self.shim = C.CDLL(HARNESS, use_errno=True)
         self.shim.xmd_image_initialize.argtypes = [C.c_char_p, C.c_ulong]
         self.shim.xmd_image_initialize.restype = C.c_void_p
-        flags = 0x08000000 | (0 if writable else 0x04000001)
-        self.handle = self.shim.xmd_image_initialize(os.fsencode(target), flags)
-        if not self.handle:
-            raise DriveError("Image session failed: " + os.strerror(C.get_errno()))
+        return self.shim.xmd_image_initialize(os.fsencode(target), flags)
 
 
 @unittest.skipUnless(PREFIX and HARNESS, "Run scripts/test-native.py with an NTFS-3G prefix")
@@ -72,6 +67,23 @@ class NativeImageTests(unittest.TestCase):
 
     def inspect(self):
         return inspect(self.image, library=self.library, volume_factory=ImageVolume)
+
+    def test_open_journal_refuses_writes_without_changing_image_or_acls(self):
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            originals = {entry.path: volume.get(entry.path) for entry in volume.walk()}
+            volume.shim.xmd_fixture_open_journal.argtypes = [C.c_void_p]
+            volume.shim.xmd_fixture_open_journal.restype = C.c_int
+            self.assertEqual(volume.shim.xmd_fixture_open_journal(volume.handle), 0)
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            ImageVolume(self.image, writable=True, library=self.library)
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        self.assertTrue(self.inspect()["ready"])
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            prepare(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertEqual({entry.path: volume.get(entry.path) for entry in volume.walk()}, originals)
 
     def test_real_ntfs_permissions_round_trip_preserves_data_and_boot(self):
         before = Path(self.image).read_bytes()[:512]

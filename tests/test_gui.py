@@ -80,6 +80,18 @@ class GUITests(unittest.TestCase):
             self.window.privacy_settings.click()
             run.assert_called_once_with(["open", PRIVACY_SETTINGS])
 
+    def test_recovery_suffix_only_when_permissions_might_have_changed(self):
+        for action in ("prepare", "restore", "inspect"):
+            for unchanged in (False, True):
+                with self.subTest(action=action, unchanged=unchanged):
+                    self.window.action = action
+                    message = "Could not open. No permissions changed." if unchanged else "Write failed."
+                    with patch.object(self.window, "report") as report:
+                        self.window.failed(message)
+                    shown = report.call_args.args[2]
+                    self.assertEqual("If preparation started" in shown,
+                                     action in ("prepare", "restore") and not unchanged)
+
     def test_disk_access_failure_shows_notice_and_keeps_dialog(self):
         with patch("sys.platform", "darwin"), patch.object(self.window, "report") as report:
             self.window.failed("Enable Full Disk Access")

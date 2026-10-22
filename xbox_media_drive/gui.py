@@ -845,7 +845,7 @@ class MainWindow(QMainWindow):
         self.followups = []
         self.log("Error: " + message)
         disconnected = "is no longer connected" in message
-        if self.action in ("prepare", "restore"):
+        if self.action in ("prepare", "restore") and "No permissions changed" not in message:
             message += "\n\nIf preparation started, keep its recovery journal and use Restore permissions."
         if sys.platform == "darwin" and "Full Disk Access" in message:
             self.disk_access_notice.show()

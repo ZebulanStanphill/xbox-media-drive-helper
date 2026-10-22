@@ -15,6 +15,35 @@ CALLBACK = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p, C.c_int, C.c_int,
                       C.c_int64, C.c_uint64, C.c_uint)
 MFT_MASK = (1 << 48) - 1
 MAX_DESCRIPTOR = 262144
+NTFS_MNT_EXCLUSIVE = 0x08000000
+NTFS_MNT_RDONLY = 0x00000001
+NTFS_MNT_FORENSIC = 0x04000000
+READ_ONLY_FLAGS = NTFS_MNT_EXCLUSIVE | NTFS_MNT_RDONLY | NTFS_MNT_FORENSIC
+
+
+WINDOWS_REPAIR_WARNING = ("If Windows says there's a problem with the drive, copy off anything you need before letting "
+                          "it repair the drive, then inspect permissions again: a repair can move files and reset their "
+                          "permissions.")
+WINDOWS_CACHED = ("Windows kept this drive's metadata cached (hibernation or Fast Startup), or lost the drive before "
+                  "closing it, so NTFS-3G won't change it. No permissions changed.\n\n"
+                  "Connect the drive to the Windows PC it was last used on, then shut Windows down fully (hold Shift "
+                  "while choosing Shut down) or eject the drive with Safely Remove Hardware. " + WINDOWS_REPAIR_WARNING)
+
+
+def open_journal_message(target):
+    if sys.platform.startswith("linux"):
+        ntfsfix = "Run sudo ntfsfix -d {} (ntfsfix is in the ntfs-3g package).".format(target)
+    else:
+        ntfsfix = ("On a Linux computer, run sudo ntfsfix -d on the drive's NTFS partition, for example "
+                   "sudo ntfsfix -d /dev/sdb1 (ntfsfix is in the ntfs-3g package).")
+    return ("The drive's NTFS journal is still open: an Xbox or Windows PC was using the drive and didn't close it, "
+            "so NTFS-3G won't change it. No permissions changed.\n\n"
+            "To close the journal, do one of these:\n"
+            "- Connect the drive to a Windows PC, wait for it to appear, then eject it with Safely Remove Hardware. "
+            + WINDOWS_REPAIR_WARNING + "\n"
+            "- " + ntfsfix + "\n"
+            "  This empties the journal, discarding any changes Windows hadn't finished writing. Keep the -d: "
+            "without it, ntfsfix marks the drive for a Windows disk check, and Linux then refuses to mount it.")
 
 
 class SecurityAPIPrefix(C.Structure):
@@ -83,16 +112,28 @@ class Volume:
         self.lib = load_library(library)
         self.writable = writable
         # EXCLUSIVE, with neither RECOVER nor IGNORE_HIBERFILE nor MAY_RDONLY.
-        flags = 0x08000000 | (0 if writable else 0x04000001)
-        self.handle = self.lib.ntfs_initialize_file_security(os.fsencode(target), flags)
+        flags = NTFS_MNT_EXCLUSIVE if writable else READ_ONLY_FLAGS
+        self.handle = self._initialize(target, flags)
         if not self.handle:
             error = C.get_errno()
-            explanation = {errno.EPERM: "NTFS-3G requires root, including for image files. Run this command with sudo.",
-                           errno.EBUSY: "The volume is mounted or in use. Unmount it first.",
+            # NTFS-3G checks the journal and hibernation only for writable sessions; it reports an open journal
+            # as EOPNOTSUPP and Windows-cached metadata as EPERM, which otherwise means "not root".
+            root = os.getuid() == 0
+            if writable and (error == errno.EOPNOTSUPP or (error == errno.EPERM and root)):
+                probe = self._initialize(target, READ_ONLY_FLAGS)
+                if probe:
+                    self.lib.ntfs_leave_file_security(probe)
+                    raise DriveError(open_journal_message(target) if error == errno.EOPNOTSUPP else WINDOWS_CACHED)
+            explanation = {errno.EBUSY: "The volume is mounted or in use. Unmount it first.",
                            errno.EACCES: "The device is not accessible. Run with sudo; check macOS disk-access permissions."}
+            if not root:
+                explanation[errno.EPERM] = "NTFS-3G requires root, including for image files. Run this command with sudo."
             raise DriveError(explanation.get(error, "NTFS-3G refused the volume ({}). It may be dirty, hibernated, "
                                              "damaged, or unsupported. Shut down Windows fully and check the filesystem there."
                                              .format(os.strerror(error))))
+
+    def _initialize(self, target, flags):
+        return self.lib.ntfs_initialize_file_security(os.fsencode(target), flags)
 
     def __enter__(self):
         return self
