@@ -13,7 +13,10 @@ from pathlib import Path
 
 VERSION = "2026.9.28"
 SHA256 = "350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8"
-URL = "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-{}.tgz".format(VERSION)
+URLS = ("https://tuxera.com/opensource/ntfs-3g_ntfsprogs-{}.tgz".format(VERSION),
+        # Linux From Scratch's mirror at the OSU Open Source Lab: tuxera.com refuses some hosts,
+        # such as GitHub's CI runners, with 403. The digest check applies to either copy.
+        "https://ftp.osuosl.org/pub/blfs/conglomeration/ntfs-3g/ntfs-3g_ntfsprogs-{}.tgz".format(VERSION))
 
 
 def main():
@@ -37,8 +40,13 @@ def main():
         if args.archive:
             shutil.copyfile(args.archive, archive)
         else:
-            subprocess.run(["curl", "--fail", "--location", "--retry", "2", "--connect-timeout", "20",
-                            "--max-time", "120", URL, "--output", str(archive)], check=True)
+            for url in URLS:
+                if subprocess.run(["curl", "--fail", "--location", "--retry", "2", "--connect-timeout", "20",
+                                   "--max-time", "120", url, "--output", str(archive)]).returncode == 0:
+                    break
+                print("Download failed; trying the next source.", flush=True)
+            else:
+                raise RuntimeError("NTFS-3G could not be downloaded from any source.")
         if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
             raise RuntimeError("NTFS-3G archive checksum mismatch; refusing to build.")
         # The archive is pinned by digest; also reject paths escaping the build folder.

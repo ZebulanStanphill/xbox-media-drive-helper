@@ -58,7 +58,7 @@ sudo apt-get install ntfs-3g
 .venv/bin/xbox-media-drive doctor
 ```
 
-For macOS, or to use the same tested library on Linux, build a project-local copy. The script downloads **NTFS-3G 2026.9.28**, verifies its pinned SHA-256 digest, and installs the library and NTFS image tools in `.native/`. It requires no root access and makes no changes to disks. It needs a C compiler, `make`, `pkg-config` and `curl`.
+For macOS, or to use the same tested library on Linux, build a project-local copy. The script downloads **NTFS-3G 2026.9.28** from Tuxera, or from the Linux From Scratch mirror if Tuxera refuses the download, verifies its pinned SHA-256 digest, and installs the library and NTFS image tools in `.native/`. It requires no root access and makes no changes to disks. It needs a C compiler, `make`, `pkg-config` and `curl`.
 
 ```sh
 # macOS prerequisites: install Xcode Command Line Tools if needed, then:
