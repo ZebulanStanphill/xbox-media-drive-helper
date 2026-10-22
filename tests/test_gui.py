@@ -62,7 +62,7 @@ class GUITests(unittest.TestCase):
         self.window.completed({"ready": True, "objects": 10, "changes_needed": 5,
                                "skipped_reparse_points": [], "blockers": []})
         self.assertTrue(self.window.prepare_button.isEnabled())
-        self.window.target.setText("/dev/different")
+        self.window.set_target("/dev/different")
         self.assertFalse(self.window.prepare_button.isEnabled())
         self.assertIsNone(self.window.inspection)
 
@@ -88,7 +88,7 @@ class GUITests(unittest.TestCase):
     def test_previously_prepared_journal_choices(self):
         for choice in ("Add to Existing Journal…", "New Journal…", "Cancel"):
             with self.subTest(choice=choice):
-                self.window.target.setText("/tmp/volume.img")
+                self.window.set_target("/tmp/volume.img")
                 self.window.inspection = {"ready": True, "changes_needed": 2, "previously_prepared": True,
                                           "identity": {"boot_sha256": "volume-id"}}
                 chosen = []
@@ -125,7 +125,7 @@ class GUITests(unittest.TestCase):
                     open_file.assert_not_called()
 
     def test_new_journal_dialog_refuses_an_existing_file_before_starting(self):
-        self.window.target.setText("/tmp/volume.img")
+        self.window.set_target("/tmp/volume.img")
         self.window.inspection = {"ready": True, "changes_needed": 2, "identity": {"boot_sha256": "volume-id"}}
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as existing, \
                 patch("xbox_media_drive.gui.is_mounted", return_value=False), \
@@ -153,7 +153,7 @@ class GUITests(unittest.TestCase):
     def test_backup_warning_is_always_visible_and_repeated_before_changes(self):
         self.assertTrue(self.window.backup_warning.isVisible())
         self.assertIn("Back up the drive before using this app", self.window.backup_warning.text())
-        self.window.target.setText("/tmp/volume.img")
+        self.window.set_target("/tmp/volume.img")
         self.window.inspection = {"ready": True, "changes_needed": 1, "identity": {"boot_sha256": "volume-id"}}
         with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
                 patch.object(QFileDialog, "getSaveFileName", return_value=("/tmp/new-journal.sqlite", "")), \
@@ -218,6 +218,100 @@ class GUITests(unittest.TestCase):
         self.window.drives.setCurrentItem(item)
         return device
 
+    def open_image(self, path):
+        with patch.object(QFileDialog, "getOpenFileName", return_value=(path, "")):
+            self.window.select_image()
+
+    def test_open_image_selects_list_item_and_invalidates_inspection(self):
+        self.add_device(mounted=True)
+        self.window.inspection = {"ready": True}
+        self.window.prepare_button.setEnabled(True)
+        with tempfile.NamedTemporaryFile(suffix=".img") as image:
+            image.write(b"NTFS")
+            image.flush()
+            self.open_image(image.name)
+            item = self.window.drives.item(0)
+            self.assertIs(self.window.drives.currentItem(), item)
+            self.assertEqual(item.text(), "{}\nNTFS image  ·  0.0 GB\n{}".format(os.path.basename(image.name), image.name))
+            self.assertEqual(item.data(Qt.UserRole), {
+                "path": image.name, "label": os.path.basename(image.name), "size": 4, "filesystem": "NTFS",
+                "mounted": False, "external": False, "disk": "", "image": True})
+            self.assertEqual(self.window.target_path, image.name)
+            self.assertEqual(self.window.drives.count(), 2)
+            self.assertIsNone(self.window.inspection)
+            self.assertFalse(self.window.prepare_button.isEnabled())
+            self.assertFalse(self.window.unmount_button.isEnabled())
+            self.window.tabs.setCurrentIndex(2)
+            self.assertFalse(self.window.unmount_button.isEnabled())
+
+    def test_open_second_image_replaces_first_and_keeps_devices(self):
+        device = self.add_device(mounted=False)
+        with tempfile.NamedTemporaryFile() as first, tempfile.NamedTemporaryFile() as second:
+            self.open_image(first.name)
+            self.open_image(second.name)
+            self.assertEqual(self.window.image_path, second.name)
+            self.assertEqual(self.window.target_path, second.name)
+            self.assertEqual([data["path"] for data in self.window.listed_devices()], [second.name, device["path"]])
+            self.assertIs(self.window.drives.currentItem(), self.window.drives.item(0))
+
+    def test_refresh_keeps_image_first_and_selected(self):
+        device = self.add_device(mounted=False)
+        with tempfile.NamedTemporaryFile() as image:
+            self.open_image(image.name)
+            self.window.action = "list"
+            self.window.completed({"devices": [device]})
+            self.assertEqual([data["path"] for data in self.window.listed_devices()], [image.name, device["path"]])
+            self.assertIs(self.window.drives.currentItem(), self.window.drives.item(0))
+            self.assertEqual(self.window.target_path, image.name)
+
+    def test_refresh_forgets_missing_image_and_clears_target(self):
+        device = self.add_device(mounted=False)
+        with tempfile.NamedTemporaryFile() as image:
+            self.open_image(image.name)
+        self.window.action = "list"
+        self.window.completed({"devices": [device]})
+        self.assertEqual(self.window.image_path, "")
+        self.assertEqual(self.window.target_path, "")
+        self.assertEqual(self.window.listed_devices(), [device])
+        self.assertIsNone(self.window.drives.currentItem())
+
+    def test_refresh_clears_disappeared_device_and_disables_prepare(self):
+        self.add_device(mounted=False)
+        self.window.inspection = {"ready": True}
+        self.window.prepare_button.setEnabled(True)
+        self.window.action = "list"
+        other = {"path": "/dev/disk8s1", "label": "Other", "size": 10**9, "filesystem": "NTFS",
+                 "mounted": False, "external": True, "disk": "/dev/disk8"}
+        self.window.completed({"devices": [other]})
+        self.assertEqual(self.window.target_path, "")
+        self.assertIsNone(self.window.inspection)
+        self.assertFalse(self.window.prepare_button.isEnabled())
+        self.assertEqual(self.window.status.text(), "Select a volume, then inspect its permissions.")
+
+    def test_no_devices_placeholder_preserves_status_with_or_without_image(self):
+        self.add_device(mounted=False)
+        self.window.action = "list"
+        for has_image in (False, True):
+            with self.subTest(image=has_image), tempfile.NamedTemporaryFile() as image:
+                if has_image:
+                    self.open_image(image.name)
+                self.window.completed({"devices": []})
+                self.assertIn("No external volumes found.", self.window.status.text())
+                self.assertEqual(self.window.drives.count(), 2 if has_image else 1)
+                item = self.window.drives.item(self.window.drives.count() - 1)
+                self.assertIn("No external volumes", item.text())
+                self.assertEqual(item.flags(), Qt.NoItemFlags)
+                self.assertEqual(self.window.target_path, image.name if has_image else "")
+
+    def test_setting_unchanged_target_preserves_inspection(self):
+        self.window.set_target("/tmp/volume.img")
+        inspection = {"ready": True}
+        self.window.inspection = inspection
+        self.window.prepare_button.setEnabled(True)
+        self.window.set_target("/tmp/volume.img")
+        self.assertIs(self.window.inspection, inspection)
+        self.assertTrue(self.window.prepare_button.isEnabled())
+
     def test_unmount_button_follows_the_selected_device(self):
         self.assertIn(self.window.unmount_button, self.window.controls)
         self.assertFalse(self.window.unmount_button.isEnabled())
@@ -235,6 +329,7 @@ class GUITests(unittest.TestCase):
         device = self.add_device(mounted=True)
         inspection = {"ready": True, "changes_needed": 1, "identity": {"boot_sha256": "volume-id"}}
         self.window.inspection = inspection
+        self.window.prepare_button.setEnabled(True)
         other = dict(device, path="/dev/disk8s1")
         with patch("xbox_media_drive.gui.unmount", return_value=device["path"]) as unmount, \
                 patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: other), SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
@@ -251,8 +346,9 @@ class GUITests(unittest.TestCase):
         self.assertEqual(dialog, [])
         self.assertEqual(self.window.selected_device()["path"], device["path"])
         self.assertFalse(self.window.selected_device()["mounted"])
-        self.assertEqual(self.window.target.text(), device["path"])
+        self.assertEqual(self.window.target_path, device["path"])
         self.assertIs(self.window.inspection, inspection)
+        self.assertTrue(self.window.prepare_button.isEnabled())
         self.assertFalse(self.window.unmount_button.isEnabled())
 
     def test_mounted_target_is_unmounted_then_preparation_continues(self):
@@ -324,8 +420,8 @@ class GUITests(unittest.TestCase):
                 self.assertEqual("recovery journal" in dialog[0][1], expected)
 
     def test_mounted_target_is_unmounted_then_the_inspection_continues(self):
-        self.add_device(mounted=True)
-        self.window.target.setText("/dev/disk9s1")
+        device = self.add_device(mounted=True)
+        self.window.set_target("/dev/disk9s1")
         commands = []
         result = '{"ready": true, "objects": 1, "changes_needed": 1, "skipped_reparse_points": [], "blockers": []}'
 
@@ -335,7 +431,7 @@ class GUITests(unittest.TestCase):
 
         with patch("xbox_media_drive.gui.is_mounted", side_effect=[True, False]), \
                 patch("xbox_media_drive.gui.unmount", return_value="/dev/disk9s1") as unmount, \
-                patch("xbox_media_drive.gui.discover", return_value=[]), \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
                 patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
                 patch("xbox_media_drive.gui.subprocess.run", side_effect=helper), \
                 patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question:
@@ -349,7 +445,7 @@ class GUITests(unittest.TestCase):
         self.assertIn("Unmounted /dev/disk9s1. The drive stays connected.", self.window.activity.toPlainText())
 
     def test_declining_the_unmount_prompt_does_nothing(self):
-        self.window.target.setText("/dev/disk9s1")
+        self.window.set_target("/dev/disk9s1")
         with patch("xbox_media_drive.gui.is_mounted", return_value=True), \
                 patch.object(QMessageBox, "question", return_value=QMessageBox.No), \
                 patch.object(self.window, "start") as start:
@@ -357,7 +453,7 @@ class GUITests(unittest.TestCase):
         start.assert_not_called()
 
     def test_unmounted_targets_and_images_skip_the_prompt(self):
-        self.window.target.setText("/tmp/volume.img")
+        self.window.set_target("/tmp/volume.img")
         with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
                 patch.object(QMessageBox, "question") as question, patch.object(self.window, "start") as start:
             self.window.inspect_volume()
@@ -365,7 +461,7 @@ class GUITests(unittest.TestCase):
         self.assertEqual(start.call_args.args[0], "inspect")
 
     def test_disconnected_drive_error_refreshes_the_list_when_the_worker_finishes(self):
-        self.window.target.setText("/dev/disk9s1")
+        self.window.set_target("/dev/disk9s1")
         with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
                 patch("xbox_media_drive.gui.subprocess.run", side_effect=DriveError("/dev/disk9s1 is no longer connected.")), \
                 patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
@@ -377,7 +473,7 @@ class GUITests(unittest.TestCase):
         self.assertEqual([title for title, text in dialog], ["Operation could not complete"])
 
     def test_successful_restore_reports_completion_after_the_window_is_idle(self):
-        self.window.target.setText("/tmp/volume.img")
+        self.window.set_target("/tmp/volume.img")
         result = json.dumps({"state": "restored", "restored": 3, "already_original": 1, "conflicts": [], "missing": []})
         busy = []
 
@@ -412,13 +508,13 @@ class GUITests(unittest.TestCase):
             self.assertIn("formatted by an Xbox", self.window.mode_status.text())
             self.assertTrue(self.window.switch_mode_button.isEnabled())
             self.assertEqual(self.window.switch_mode_button.text(), action)
-        self.window.target.setText("/dev/other")
+        self.window.set_target("/dev/other")
         self.assertIsNone(self.window.disk_layout)
         self.assertFalse(self.window.switch_mode_button.isEnabled())
 
-    def test_check_mode_resolves_typed_path_instead_of_old_selection(self):
+    def test_check_mode_resolves_target_instead_of_old_selection(self):
         self.add_device(mounted=False)
-        self.window.target.setText("/dev/sdb2")
+        self.window.set_target("/dev/sdb2")
         with patch("xbox_media_drive.gui.whole_disk", return_value="/dev/sdb") as resolve, \
                 patch.object(self.window, "start") as start:
             self.window.check_drive_mode()

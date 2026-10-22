@@ -80,7 +80,7 @@ Use `--library /absolute/path/to/libntfs-3g.dylib` (macOS) or `.so` (Linux) befo
 # or: .venv/bin/xbox-media-drive gui
 ```
 
-1. Select the external NTFS partition, or open a raw NTFS volume image.
+1. Select the external NTFS partition, or open a raw NTFS volume image to add it to the list.
 2. Click **Unmount** (inspecting a mounted volume also offers to). Do not use Eject or the OS's eject button: that disconnects the drive. If you already ejected it, unplug and reconnect it, then click **Refresh drives**.
 3. Click **Inspect permissions** (read-only).
 4. Click **Prepare for Xbox**, save a new recovery journal on your computer, and confirm the displayed target.

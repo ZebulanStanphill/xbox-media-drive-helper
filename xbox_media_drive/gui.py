@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -217,6 +217,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 780)
         self.worker = None
         self.inspection = None
+        self.target_path = ""
+        self.image_path = ""
         self.disk_layout = None
         self.mode_backup = None
         self.action = None
@@ -253,7 +255,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         left.addWidget(label("1. Choose a volume", "section"))
         self.drives = QListWidget()
-        self.drives.setAccessibleName("External volumes")
+        self.drives.setAccessibleName("Volumes and images")
         self.drives.setMinimumWidth(285)
         self.drives.currentItemChanged.connect(self.select_drive)
         left.addWidget(self.drives, 1)
@@ -274,11 +276,6 @@ class MainWindow(QMainWindow):
 
         right = QVBoxLayout()
         right.addWidget(label("2. Prepare or restore", "section"))
-        self.target = QLineEdit()
-        self.target.setPlaceholderText("/dev/disk4s1 or /dev/sdb1")
-        self.target.setAccessibleName("NTFS volume path")
-        self.target.textChanged.connect(self.invalidate)
-        right.addWidget(self.target)
         self.tabs = QTabWidget()
         self.tabs.setTabBar(ScrollSafeTabBar())
         prepare_tab = QWidget()
@@ -403,7 +400,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.activity)
         layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
-                         self.target, self.tabs, self.library, self.check_mode_button,
+                         self.tabs, self.library, self.check_mode_button,
                          self.switch_mode_button, self.restore_sector_button]
         if auto_refresh:
             self.refresh_devices()
@@ -411,10 +408,16 @@ class MainWindow(QMainWindow):
     def log(self, text):
         self.activity.appendPlainText(datetime.now().strftime("%H:%M") + "  " + text)
 
+    def set_target(self, path):
+        if path != self.target_path:
+            self.target_path = path
+            self.invalidate()
+
     def invalidate(self, *_):
         self.inspection = None
         self.prepare_button.setEnabled(False)
-        self.status.setText("Inspect this volume before preparing it.")
+        self.status.setText("Inspect this volume before preparing it." if self.target_path else
+                            "Select a volume, then inspect its permissions.")
         self.disk_layout = None
         self.switch_mode_button.setEnabled(False)
         self.switch_mode_button.setText("Check drive mode first")
@@ -438,14 +441,37 @@ class MainWindow(QMainWindow):
         self.unmount_button.setEnabled(self.worker is None and mounted)
 
     def select_drive(self, item, previous=None):
-        if item:
-            self.target.setText(item.data(Qt.UserRole)["path"])
+        if item and item.data(Qt.UserRole):
+            self.set_target(item.data(Qt.UserRole)["path"])
         self.update_unmount_button()
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open raw NTFS volume image", "", "All files (*)")
         if path:
-            self.target.setText(path)
+            with QSignalBlocker(self.drives):
+                for row in reversed(range(self.drives.count())):
+                    data = self.drives.item(row).data(Qt.UserRole)
+                    if data and data.get("image"):
+                        self.drives.takeItem(row)
+                self.image_path = path
+                item = self.add_image_item()
+                if item:
+                    self.drives.setCurrentItem(item)
+            self.select_drive(self.drives.currentItem())
+
+    def add_image_item(self):
+        if not self.image_path:
+            return None
+        path = Path(self.image_path)
+        if not path.is_file():
+            self.image_path = ""
+            return None
+        size = path.stat().st_size
+        item = QListWidgetItem("{}\nNTFS image  ·  {:.1f} GB\n{}".format(path.name, size / 10**9, path))
+        item.setData(Qt.UserRole, {"path": str(path), "label": path.name, "size": size, "filesystem": "NTFS",
+                                   "mounted": False, "external": False, "disk": "", "image": True})
+        self.drives.insertItem(0, item)
+        return item
 
     def refresh_devices(self):
         self.start("list", listing=True)
@@ -462,7 +488,7 @@ class MainWindow(QMainWindow):
 
     def offer_unmount(self, resume, whole=False, path=None):
         """If the target is mounted, offer to unmount it and then call resume. Returns True when it took over."""
-        path = path or self.target.text().strip()
+        path = path or self.target_path
         try:
             mounted = is_disk_mounted(path) if whole else is_mounted(path)
         except DriveError:
@@ -486,16 +512,16 @@ class MainWindow(QMainWindow):
         args = []
         if self.library.text().strip():
             args.extend(["--library", self.library.text().strip()])
-        args.extend([command, self.target.text().strip()])
+        args.extend([command, self.target_path])
         return args
 
     def inspect_volume(self):
-        if self.target.text().strip():
+        if self.target_path:
             if self.offer_unmount(self.inspect_volume):
                 return
             self.start("inspect", self.arguments("inspect") + ["--access", self.access.currentData()])
         else:
-            self.log("Choose a volume or enter its device path first.")
+            self.log("Choose a volume first.")
 
     def prepare_volume(self):
         if not self.inspection or not self.inspection["ready"]:
@@ -533,33 +559,33 @@ class MainWindow(QMainWindow):
         journal_message = ("Add {} objects to journal: {}" if append else "{} objects need changes.\nRecovery journal: {}").format(
             self.inspection["changes_needed"], backup)
         message = "Grant app access on {}?\n\nBack up the drive first if you haven't.\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the ALL APPLICATION PACKAGES and Authenticated Users entries added by this app must be removed manually in Windows.".format(
-            self.target.text(), journal_message)
+            self.target_path, journal_message)
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,
                        "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"] + (["--append"] if append else []))
 
     def restore_volume(self):
-        if not self.target.text().strip():
+        if not self.target_path:
             self.log("Choose the original NTFS volume first.")
             return
         if self.offer_unmount(self.restore_volume):
             return
         backup, _ = QFileDialog.getOpenFileName(self, "Choose recovery journal", str(Path.home()), "SQLite journal (*.sqlite);;All files (*)")
         if backup and QMessageBox.question(self, "Restore permissions", "Restore original permissions on {} using {}?".format(
-                self.target.text(), backup)) == QMessageBox.Yes:
+                self.target_path, backup)) == QMessageBox.Yes:
             self.start("restore", self.arguments("restore") + ["--backup", backup, "--yes"])
 
     def selected_disk(self):
-        """Use discovery's parent only when it still matches the editable target field."""
-        path = self.target.text().strip()
+        """Use discovery's parent disk when it matches the selected target."""
+        path = self.target_path
         device = self.selected_device()
         if device and device["path"] == path and device.get("disk"):
             return device["disk"]
         return whole_disk(path)
 
     def check_drive_mode(self):
-        if not self.target.text().strip():
-            self.log("Choose a drive or enter its device path first.")
+        if not self.target_path:
+            self.log("Choose a drive first.")
             return
         try:
             disk = self.selected_disk()
@@ -600,7 +626,7 @@ class MainWindow(QMainWindow):
             self.start("switch-mode", ["mode", disk, "--set", target, "--backup", backup, "--yes"])
 
     def restore_boot_sector(self):
-        if not self.target.text().strip():
+        if not self.target_path:
             self.log("Choose the original whole disk first.")
             return
         try:
@@ -644,7 +670,7 @@ class MainWindow(QMainWindow):
         else:
             text = "{} {}… Enter your administrator password if asked.".format(
                 {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on"}[action],
-                self.target.text().strip())
+                self.target_path)
         self.log(text)
         self.busy.setText(text)
         self.spinner.start()
@@ -654,6 +680,7 @@ class MainWindow(QMainWindow):
         if self.action == "list":
             previous = self.selected_device()
             self.drives.clear()
+            self.add_image_item()
             for device in result["devices"]:
                 size = "{:.1f} GB".format(device["size"] / 10**9)
                 item = QListWidgetItem("{}\n{}  ·  {}\n{}".format(
@@ -661,8 +688,13 @@ class MainWindow(QMainWindow):
                     device["path"] + "  ·  Mounted — click Unmount" if device["mounted"] else device["path"]))
                 item.setData(Qt.UserRole, device)
                 self.drives.addItem(item)
-                if previous and device["path"] == previous["path"]:
+            for row in range(self.drives.count()):
+                item = self.drives.item(row)
+                if previous and item.data(Qt.UserRole)["path"] == previous["path"]:
                     self.drives.setCurrentItem(item)
+                    break
+            if self.drives.currentItem() is None:
+                self.set_target("")
             self.log("Found {} external volumes.".format(len(result["devices"])))
             if not result["devices"]:
                 item = QListWidgetItem("No external volumes\nConnect a drive, then refresh.")
@@ -724,7 +756,7 @@ class MainWindow(QMainWindow):
                 done = ("Added {1} objects on {0} to the existing journal. They now allow Xbox app access." if appended
                         else "Finished preparing {0}: {1} objects now allow Xbox app access.")
                 self.report(QMessageBox.Information, headline,
-                            done.format(self.target.text().strip(), result["changed"]) + "\n\n"
+                            done.format(self.target_path, result["changed"]) + "\n\n"
                             "Keep the recovery journal: {}\n\n"
                             "You can unplug the drive, connect it to your Xbox and choose “Use for Media”.\n\n"
                             "Files you copy onto the drive later from a Mac or Linux PC won't have app access until you "
@@ -742,7 +774,7 @@ class MainWindow(QMainWindow):
                     self.report(QMessageBox.Information, "Restoration complete",
                                 "Finished restoring {}: {} objects restored, {} were already original.\n\n"
                                 "Files not recorded in the journal keep their current permissions.".format(
-                                    self.target.text().strip(), result["restored"], result["already_original"]))
+                                    self.target_path, result["restored"], result["already_original"]))
 
     def report(self, icon, title, message, settings=False):
         """Show a result once the worker has finished, so the window is no longer busy behind the dialog."""
