@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox
-    from xbox_media_drive.gui import MainWindow, STYLE, helper_command, parse_helper_output
+    from xbox_media_drive.gui import MainWindow, configure, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -25,8 +26,7 @@ class GUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
-        cls.app.setStyle("Fusion")
-        cls.app.setStyleSheet(STYLE)
+        configure(cls.app)
 
     def setUp(self):
         self.window = MainWindow(auto_refresh=False)
@@ -37,6 +37,25 @@ class GUITests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+
+    def wheel(self, widget, delta):
+        position = widget.rect().center()
+        event = QWheelEvent(QPointF(position), QPointF(widget.mapToGlobal(position)),
+                            QPoint(), QPoint(0, delta), Qt.NoButton, Qt.NoModifier,
+                            Qt.NoScrollPhase, False)
+        QApplication.sendEvent(widget, event)
+        return event
+
+    def test_scrolling_never_changes_access_or_tabs(self):
+        for widget in (self.window.access, self.window.tabs.tabBar()):
+            for index, delta in ((0, -120), (1, 120)):
+                with self.subTest(widget=type(widget).__name__, delta=delta):
+                    widget.setCurrentIndex(index)
+                    event = self.wheel(widget, delta)
+                    self.assertEqual(widget.currentIndex(), index)
+                    self.assertFalse(event.isAccepted())
+        # The replacement tab bar must look like the one QTabWidget creates itself.
+        self.assertFalse(self.window.tabs.tabBar().drawBase())
 
     def test_real_inspection_result_enables_action_and_target_changes_invalidate(self):
         self.window.action = "inspect"

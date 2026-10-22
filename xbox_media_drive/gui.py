@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QListWidgetItem, QMainWindow, QMessageBox,
                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
                               QSizePolicy, QLayout,
-                              QTabWidget, QVBoxLayout, QWidget)
+                              QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError
 from .devices import discover, is_disk_mounted, is_mounted, unmount, whole_disk
@@ -51,6 +51,29 @@ QProgressBar { border: none; background: #23372a; border-radius: 3px; max-height
 QProgressBar::chunk { background: #98e5ad; border-radius: 3px; }
 QToolTip { background: #273d2e; color: white; border: 1px solid #55705d; }
 """
+
+
+# As on macOS, scrolling over these controls scrolls the page instead of changing their value.
+class ScrollSafeComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class ScrollSafeTabBar(QTabBar):
+    def __init__(self):
+        super().__init__()
+        # Like the tab bar QTabWidget creates itself.
+        self.setDrawBase(False)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+def configure(app):
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE)
+    # Lets Wayland/X11 desktops associate the window with the .desktop launcher.
+    app.setDesktopFileName("xbox-media-drive-helper")
 
 
 PRIVACY_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
@@ -253,6 +276,7 @@ class MainWindow(QMainWindow):
         self.target.textChanged.connect(self.invalidate)
         right.addWidget(self.target)
         self.tabs = QTabWidget()
+        self.tabs.setTabBar(ScrollSafeTabBar())
         self.tabs.setMinimumHeight(290)
         prepare_tab = QWidget()
         prep = QVBoxLayout(prepare_tab)
@@ -260,7 +284,7 @@ class MainWindow(QMainWindow):
         prep.setContentsMargins(0, 16, 0, 0)
         prep.setSpacing(12)
         prep.addWidget(label("App access"))
-        self.access = QComboBox()
+        self.access = ScrollSafeComboBox()
         self.access.addItem("Read, write & delete  ·  Modify", "modify")
         self.access.addItem("Full control  ·  Compatibility option", "full")
         self.access.currentIndexChanged.connect(self.invalidate)
@@ -772,10 +796,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication.instance() or QApplication(sys.argv[:1])
-    app.setStyle("Fusion")
-    app.setStyleSheet(STYLE)
-    # Lets Wayland/X11 desktops associate the window with the .desktop launcher.
-    app.setDesktopFileName("xbox-media-drive-helper")
+    configure(app)
     window = MainWindow()
     window.show()
     return app.exec()
