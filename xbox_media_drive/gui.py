@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                               QListWidgetItem, QMainWindow, QMessageBox,
                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-                              QSizePolicy, QLayout,
+                              QSizePolicy, QLayout, QProxyStyle, QStyle,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError
@@ -68,8 +69,22 @@ class ScrollSafeTabBar(QTabBar):
         event.ignore()
 
 
+class AppStyle(QProxyStyle):
+    """Fusion, with the app icon on questions: macOS's question icon is a black glyph that vanishes on the dark theme."""
+
+    def __init__(self):
+        super().__init__("Fusion")
+
+    def standardIcon(self, icon, option=None, widget=None):
+        if icon == QStyle.SP_MessageBoxQuestion:
+            question = app_icon()
+            if not question.isNull():
+                return question
+        return super().standardIcon(icon, option, widget)
+
+
 def configure(app):
-    app.setStyle("Fusion")
+    app.setStyle(AppStyle())
     app.setStyleSheet(STYLE)
     # Lets Wayland/X11 desktops associate the window with the .desktop launcher.
     app.setDesktopFileName("xbox-media-drive-helper")
@@ -148,6 +163,7 @@ class Worker(QThread):
             self.failed.emit(str(exc))
 
 
+@lru_cache(maxsize=1)
 def app_icon():
     """Render the bundled SVG at several sizes; fall back to no icon if QtSvg is unavailable."""
     icon = QIcon()

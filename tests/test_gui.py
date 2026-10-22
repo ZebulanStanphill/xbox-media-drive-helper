@@ -12,8 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QWheelEvent
-    from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox
-    from xbox_media_drive.gui import MainWindow, configure, helper_command, parse_helper_output
+    from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox, QStyle
+    from xbox_media_drive.gui import MainWindow, app_icon, configure, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -37,6 +37,20 @@ class GUITests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+
+    def test_question_dialog_uses_app_icon_through_stylesheet(self):
+        self.assertFalse(app_icon().isNull())
+        for kind in (QMessageBox.Question, QMessageBox.Information, QMessageBox.Warning):
+            with self.subTest(kind=kind):
+                box = QMessageBox(kind, "Unmount volume", "Unmount it now?",
+                                  QMessageBox.Yes | QMessageBox.No, self.window)
+                pixmap = box.iconPixmap()
+                expected = app_icon().pixmap(pixmap.size()).toImage()
+                self.assertEqual(pixmap.toImage() == expected, kind == QMessageBox.Question)
+                box.deleteLater()
+        # The static question convenience function creates a box with this same icon enum.
+        self.assertEqual(self.app.style().standardIcon(QStyle.SP_MessageBoxQuestion).cacheKey(),
+                         app_icon().cacheKey())
 
     def wheel(self, widget, delta):
         position = widget.rect().center()
