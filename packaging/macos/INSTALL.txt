@@ -21,6 +21,6 @@ The bundled CLI is available in Terminal:
 
 Compatibility is checked against macOS 15.8 at build time. The release report
 states which CPU/runtime checks were actually performed. Native Intel hardware,
-macOS 15.8 itself, and physical Xbox drive operations still need validation.
+macOS 15.8 itself, and game drive mode on real hardware still need validation.
 
 The source archive and third-party license notices accompany this release.
