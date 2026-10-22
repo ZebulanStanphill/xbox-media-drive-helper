@@ -23,7 +23,6 @@ from .devices import discover, is_disk_mounted, is_mounted, unmount, whole_disk
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
 QMainWindow { background: #101613; }
-QLabel#title { font-size: 29px; font-weight: 700; }
 QLabel#muted { color: #a4b1a8; }
 QLabel#section { font-size: 17px; font-weight: 650; }
 QLabel#warning { color: #f3c969; font-weight: 600; }
@@ -227,10 +226,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.setContentsMargins(30, 26, 30, 24)
         layout.setSpacing(14)
-        header = QVBoxLayout()
-        header.addWidget(label("Xbox Media Drive Helper", "title"))
-        header.addWidget(label("Prepare NTFS storage for Xbox apps, with a way back.", "muted"))
-        layout.addLayout(header)
+        header = QLabel(
+            '<span style="font-size: 29px; font-weight: 700;">Xbox Media Drive Helper</span>'
+            '&nbsp;&nbsp;&nbsp;'
+            '<span style="font-size: 13px; color: #a4b1a8;">'
+            'Prepare NTFS storage for Xbox apps, with a way back.</span>'
+        )
+        header.setTextFormat(Qt.RichText)
+        header.setWordWrap(False)
+        layout.addWidget(header)
 
         intro = QFrame()
         intro.setObjectName("panel")
@@ -277,18 +281,21 @@ class MainWindow(QMainWindow):
         right.addWidget(self.target)
         self.tabs = QTabWidget()
         self.tabs.setTabBar(ScrollSafeTabBar())
-        self.tabs.setMinimumHeight(290)
         prepare_tab = QWidget()
         prep = QVBoxLayout(prepare_tab)
         prep.setSizeConstraint(QLayout.SetMinimumSize)
         prep.setContentsMargins(0, 16, 0, 0)
         prep.setSpacing(12)
-        prep.addWidget(label("App access"))
+        access_row = QHBoxLayout()
+        access_label = QLabel("App access")
+        access_label.setWordWrap(False)
+        access_row.addWidget(access_label)
         self.access = ScrollSafeComboBox()
         self.access.addItem("Read, write & delete  ·  Modify", "modify")
         self.access.addItem("Full control  ·  Compatibility option", "full")
         self.access.currentIndexChanged.connect(self.invalidate)
-        prep.addWidget(self.access)
+        access_row.addWidget(self.access, 1)
+        prep.addLayout(access_row)
         prep.addWidget(label("Grants ALL APPLICATION PACKAGES access to existing files and folders, and Authenticated "
                              "Users the same access where the drive lacks it: Windows lets an app use only access granted "
                              "to both the app and its user account. This includes other packaged apps and users. Folders "

@@ -166,6 +166,7 @@ class GUITests(unittest.TestCase):
         self.app.processEvents()
         for control in (self.window.access, self.window.check, self.window.prepare_button):
             self.assertGreaterEqual(control.height(), 30)
+        self.assertLess(self.window.tabs.geometry().bottom(), self.window.library.geometry().top())
 
     def test_mac_authorization_quotes_shell_arguments(self):
         target = "/tmp/drive'; touch SHOULD_NOT_EXIST; echo '.img"
