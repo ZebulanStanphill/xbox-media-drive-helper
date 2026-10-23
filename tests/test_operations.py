@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.native import Entry
-from xbox_media_drive.operations import inspect, journal, journal_info, prepare, put_meta, restore
+from xbox_media_drive.operations import clear_dirty, inspect, journal, journal_info, prepare, put_meta, restore
 from xbox_media_drive.security import APP_PACKAGES, MODIFY, grant, signature
 from tests.test_security import ace, descriptor
 
@@ -83,6 +83,27 @@ class OperationTests(unittest.TestCase):
 
     def restore(self):
         return restore(self.target, self.backup, volume_factory=self.volume)
+
+    def test_clear_dirty_no_write_when_clean(self):
+        with patch.object(self.volume, "clear_dirty", create=True) as write:
+            self.assertEqual(clear_dirty(self.target, volume_factory=self.volume),
+                             {"target": self.target, "dirty": False, "cleared": False})
+            write.assert_not_called()
+
+    def test_clear_dirty_writes_and_verifies(self):
+        self.volume.is_dirty = True
+        with patch.object(self.volume, "clear_dirty", create=True,
+                          side_effect=lambda: setattr(self.volume, "is_dirty", False)) as write:
+            self.assertTrue(clear_dirty(self.target, volume_factory=self.volume)["cleared"])
+            write.assert_called_once_with()
+        self.assertEqual(self.volume.writes, 0)
+        self.assertFalse(Path(self.backup).exists())
+
+    def test_clear_dirty_verification_failure(self):
+        self.volume.is_dirty = True
+        with patch.object(self.volume, "clear_dirty", create=True):
+            with self.assertRaisesRegex(DriveError, "verification failed"):
+                clear_dirty(self.target, volume_factory=self.volume)
 
     def test_dirty_flag_warns_without_blocking_operations(self):
         self.assertFalse(inspect(self.target, volume_factory=self.volume)["dirty"])

@@ -16,6 +16,23 @@ class CLITests(unittest.TestCase):
             status = main(arguments)
         return status, stdout.getvalue(), stderr.getvalue()
 
+    def test_clear_dirty_confirmation(self):
+        for tty, answer, yes, expected in ((False, None, False, False),
+                                            (True, "/wrong", False, False),
+                                            (True, "/dev/test", False, True),
+                                            (False, None, True, True)):
+            with self.subTest(tty=tty, answer=answer, yes=yes), \
+                    patch("sys.stdin.isatty", return_value=tty), \
+                    patch("builtins.input", return_value=answer), \
+                    patch("xbox_media_drive.cli.clear_dirty", return_value={"dirty": False, "cleared": True}) as clear:
+                args = ["--json", "clear-dirty", "/dev/test"] + (["--yes"] if yes else [])
+                status, output, error = self.call(args)
+                self.assertEqual(status, 0 if expected else 1)
+                self.assertEqual(clear.called, expected)
+                self.assertIn("read-only chkdsk X:", error)
+                if expected:
+                    self.assertTrue(json.loads(output)["cleared"])
+
     def test_dirty_warning_and_json_for_each_operation(self):
         for command in ("inspect", "prepare", "restore"):
             for dirty in (False, True):

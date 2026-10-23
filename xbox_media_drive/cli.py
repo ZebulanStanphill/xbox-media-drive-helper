@@ -8,7 +8,7 @@ from . import DriveError, __version__
 from .devices import discover, whole_disk, validate_whole_disk
 from .layout import analyze, read_head, restore_sector, switch
 from .native import load_library
-from .operations import DIRTY_WARNING, inspect, journal_info, prepare, restore
+from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, clear_dirty, inspect, journal_info, prepare, restore
 
 
 def parser():
@@ -30,6 +30,9 @@ def parser():
     action.add_argument("--restore", metavar="FILE", help="Restore a saved first sector")
     mode.add_argument("--backup", help="New host-side first-sector backup (required with --set)")
     mode.add_argument("--yes", action="store_true", help="Confirm the displayed disk noninteractively")
+    clear = sub.add_parser("clear-dirty", help="Clear the NTFS dirty flag after Windows' read-only chkdsk finds no problems")
+    clear.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
+    clear.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
     for command in ("inspect", "prepare", "restore"):
         cmd = sub.add_parser(command, help={"inspect": "Read-only permission preflight",
                                            "prepare": "Grant Xbox app permissions with a recovery journal",
@@ -85,6 +88,16 @@ def main(argv=None):
                 result = switch(disk, args.set, args.backup) if args.set else restore_sector(disk, args.restore)
             else:
                 result = dict(analyze(read_head(disk)), disk=disk)
+        elif args.command == "clear-dirty":
+            print(CLEAR_DIRTY_CONFIRMATION, file=sys.stderr)
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise DriveError("Pass --yes after checking the target with inspect.")
+                print("Type the complete target path {} to confirm: ".format(args.target),
+                      end="", file=sys.stderr, flush=True)
+                if input() != args.target:
+                    raise DriveError("Confirmation did not match; no changes made.")
+            result = clear_dirty(args.target, args.library)
         else:
             if args.command in ("prepare", "restore") and not args.yes:
                 if not sys.stdin.isatty():

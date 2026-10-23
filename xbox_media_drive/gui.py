@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
 
 from . import DriveError
 from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
-from .operations import DIRTY_WARNING
+from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -346,6 +346,10 @@ class MainWindow(QMainWindow):
         self.dirty_warning.setTextFormat(Qt.PlainText)
         self.dirty_warning.hide()
         prep.addWidget(self.dirty_warning)
+        self.clear_dirty_button = QPushButton("Clear Dirty Flag…")
+        self.clear_dirty_button.hide()
+        self.clear_dirty_button.clicked.connect(self.clear_dirty_volume)
+        prep.addWidget(self.clear_dirty_button)
         self.prepare_button = QPushButton("Prepare for Xbox…")
         self.prepare_button.setObjectName("primary")
         self.prepare_button.setEnabled(False)
@@ -443,7 +447,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.activity)
         layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
-                         self.tabs, self.library, self.check_mode_button,
+                         self.tabs, self.library, self.clear_dirty_button, self.check_mode_button,
                          self.switch_mode_button, self.restore_sector_button]
         self.check_disk_access()
         QGuiApplication.instance().applicationStateChanged.connect(self.application_state_changed)
@@ -471,6 +475,7 @@ class MainWindow(QMainWindow):
     def invalidate(self, *_):
         self.inspection = None
         self.dirty_warning.hide()
+        self.clear_dirty_button.hide()
         self.prepare_button.setEnabled(False)
         self.status.setText("Inspect this volume before preparing it." if self.target_path else
                             "Select a volume, then inspect its permissions.")
@@ -578,6 +583,15 @@ class MainWindow(QMainWindow):
             self.start("inspect", self.arguments("inspect") + ["--access", self.access.currentData()])
         else:
             self.log("Choose a volume first.")
+
+    def clear_dirty_volume(self):
+        if not self.inspection or not self.inspection.get("dirty"):
+            return
+        if self.offer_unmount(self.clear_dirty_volume):
+            return
+        message = "Clear the NTFS dirty flag on {}?\n\n{}".format(self.target_path, CLEAR_DIRTY_CONFIRMATION)
+        if QMessageBox.question(self, "Clear Dirty Flag", message) == QMessageBox.Yes:
+            self.start("clear-dirty", self.arguments("clear-dirty") + ["--yes"])
 
     def prepare_volume(self):
         if not self.inspection or not self.inspection["ready"]:
@@ -729,7 +743,8 @@ class MainWindow(QMainWindow):
                 "Checking drive mode on" if action == "check-mode" else "Restoring boot sector on", arguments[1])
         else:
             text = "{} {}… Enter your administrator password if asked.".format(
-                {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on"}[action],
+                {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on",
+                 "clear-dirty": "Clearing the NTFS dirty flag on"}[action],
                 self.target_path)
         self.log(text)
         self.busy.setText(text)
@@ -768,6 +783,7 @@ class MainWindow(QMainWindow):
         elif self.action == "inspect":
             self.inspection = result
             self.dirty_warning.setVisible(bool(result.get("dirty")))
+            self.clear_dirty_button.setVisible(bool(result.get("dirty")))
             self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0)
             message = "{} objects inspected · {} need changes · {} reparse points skipped".format(
                 result["objects"], result["changes_needed"], len(result["skipped_reparse_points"]))
@@ -781,6 +797,10 @@ class MainWindow(QMainWindow):
             self.status.setText(message)
             self.log(message)
             QApplication.alert(self)
+        elif self.action == "clear-dirty":
+            self.invalidate()
+            self.log("NTFS dirty flag cleared." if result["cleared"] else "NTFS dirty flag was already clear.")
+            self.followups.append(self.inspect_volume)
         elif self.action == "check-mode":
             self.disk_layout = result
             description = {"game": "Game mode (Xbox signature)", "media": "Media / PC mode (standard signature)"}.get(

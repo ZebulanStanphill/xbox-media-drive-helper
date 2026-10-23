@@ -14,7 +14,7 @@ from pathlib import Path
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.native import Volume
-from xbox_media_drive.operations import inspect, prepare, restore
+from xbox_media_drive.operations import clear_dirty, inspect, prepare, restore
 from xbox_media_drive.security import AUTHENTICATED_USERS, Descriptor, MODIFY, acl_entries, signature
 from tests.test_security import ace, descriptor
 
@@ -67,6 +67,43 @@ class NativeImageTests(unittest.TestCase):
 
     def inspect(self):
         return inspect(self.image, library=self.library, volume_factory=ImageVolume)
+
+    def mark_dirty(self, volume):
+        volume.shim.xmd_fixture_dirty.argtypes = [C.c_void_p]
+        volume.shim.xmd_fixture_dirty.restype = C.c_int
+        self.assertEqual(volume.shim.xmd_fixture_dirty(volume.handle), 0)
+
+    def test_clear_dirty_persists_and_preserves_flags_acls_and_data(self):
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            originals = {entry.path: volume.get(entry.path) for entry in volume.walk()}
+            self.mark_dirty(volume)
+            # Include undocumented bits that upstream write_flags masks away.
+            flags = volume._volume_flags() | 0x0180
+            volume._volume_flags(write=flags)
+        result = clear_dirty(self.image, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(result, {"target": os.path.realpath(self.image), "dirty": False, "cleared": True})
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertFalse(volume.dirty())
+            self.assertEqual(volume._volume_flags(), flags & ~1)
+            self.assertEqual({entry.path: volume.get(entry.path) for entry in volume.walk()}, originals)
+        for path in ("/movie.mkv", "/Media/nested.mkv", "/alias.mkv", "/caf\u00e9-\u65e5\u672c.mkv"):
+            self.assertEqual(self.tool("ntfscat", self.image, path), self.payload)
+        self.assertFalse(Path(self.backup).exists())
+
+    def test_clear_dirty_refuses_open_journal_without_changes(self):
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            originals = {entry.path: volume.get(entry.path) for entry in volume.walk()}
+            self.mark_dirty(volume)
+            volume.shim.xmd_fixture_open_journal.argtypes = [C.c_void_p]
+            volume.shim.xmd_fixture_open_journal.restype = C.c_int
+            self.assertEqual(volume.shim.xmd_fixture_open_journal(volume.handle), 0)
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            clear_dirty(self.image, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertTrue(volume.dirty())
+            self.assertEqual({entry.path: volume.get(entry.path) for entry in volume.walk()}, originals)
 
     def test_dirty_flag_warns_and_allows_preparation(self):
         with ImageVolume(self.image, library=self.library) as volume:

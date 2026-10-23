@@ -19,7 +19,7 @@ except ImportError:
     HAS_QT = False
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.operations import DIRTY_WARNING
+from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 
 @unittest.skipUnless(HAS_QT, "Install the gui extra to test the desktop interface")
@@ -220,6 +220,7 @@ class GUITests(unittest.TestCase):
         self.window.action = "inspect"
         self.window.completed(result)
         self.assertFalse(self.window.dirty_warning.isHidden())
+        self.assertFalse(self.window.clear_dirty_button.isHidden())
         self.assertEqual(self.window.dirty_warning.text(), DIRTY_WARNING)
         self.assertTrue(self.window.prepare_button.isEnabled())
         with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
@@ -229,12 +230,55 @@ class GUITests(unittest.TestCase):
         self.assertIn(DIRTY_WARNING, question.call_args.args[2])
         self.window.completed(dict(result, dirty=False))
         self.assertTrue(self.window.dirty_warning.isHidden())
+        self.assertTrue(self.window.clear_dirty_button.isHidden())
         self.window.completed(result)
         self.window.set_target("/tmp/another.img")
         self.assertTrue(self.window.dirty_warning.isHidden())
+        self.assertTrue(self.window.clear_dirty_button.isHidden())
         self.window.completed(result)
         self.window.invalidate()
         self.assertTrue(self.window.dirty_warning.isHidden())
+        self.assertTrue(self.window.clear_dirty_button.isHidden())
+
+    def test_clear_dirty_requires_confirmation_and_runs_cli(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.library.setText("/tmp/libntfs.dylib")
+        self.window.inspection = {"dirty": True}
+        for answer in (QMessageBox.No, QMessageBox.Yes):
+            with self.subTest(answer=answer), patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                    patch.object(QMessageBox, "question", return_value=answer) as question, \
+                    patch.object(self.window, "start") as start:
+                self.window.clear_dirty_volume()
+                self.assertIn(CLEAR_DIRTY_CONFIRMATION, question.call_args.args[2])
+                self.assertIn("/tmp/volume.img", question.call_args.args[2])
+                if answer == QMessageBox.Yes:
+                    start.assert_called_once_with("clear-dirty", ["--library", "/tmp/libntfs.dylib",
+                                                               "clear-dirty", "/tmp/volume.img", "--yes"])
+                else:
+                    start.assert_not_called()
+        self.window.invalidate()
+        with patch.object(QMessageBox, "question") as question:
+            self.window.clear_dirty_volume()
+        question.assert_not_called()
+
+    def test_clear_dirty_success_reinspects_after_worker_finishes(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "clear-dirty"
+        self.window.completed({"target": "/tmp/volume.img", "dirty": False, "cleared": True})
+        self.assertTrue(self.window.clear_dirty_button.isHidden())
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), patch.object(self.window, "start") as start:
+            self.window.followups.pop(0)()
+        start.assert_called_once_with("inspect", ["inspect", "/tmp/volume.img", "--access", "modify"])
+
+    def test_clear_dirty_button_disabled_while_worker_runs(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.clear_dirty_button.show()
+        with patch("xbox_media_drive.gui.Worker") as worker:
+            self.window.start("clear-dirty", ["clear-dirty", "/tmp/volume.img", "--yes"])
+            self.assertFalse(self.window.clear_dirty_button.isEnabled())
+            worker.return_value.start.assert_called_once_with()
+            self.window.finished()
+        self.assertTrue(self.window.clear_dirty_button.isEnabled())
 
     def test_backup_warning_is_always_visible_and_repeated_before_changes(self):
         self.assertTrue(self.window.backup_warning.isVisible())

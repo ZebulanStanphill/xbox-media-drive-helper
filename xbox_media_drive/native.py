@@ -99,6 +99,8 @@ def load_library(explicit=None):
             lib.ntfs_attr_open.restype = C.c_void_p
             lib.ntfs_attr_pread.argtypes = [C.c_void_p, C.c_int64, C.c_int64, C.c_void_p]
             lib.ntfs_attr_pread.restype = C.c_int64
+            lib.ntfs_attr_pwrite.argtypes = [C.c_void_p, C.c_int64, C.c_int64, C.c_void_p]
+            lib.ntfs_attr_pwrite.restype = C.c_int64
             lib.ntfs_attr_close.argtypes = [C.c_void_p]
             lib.ntfs_attr_close.restype = None
             return lib
@@ -152,12 +154,29 @@ class Volume:
             if typ is None:
                 raise DriveError("NTFS-3G could not close/flush the volume. Keep the recovery journal and check the drive.")
 
-    def dirty(self):
-        """Read VOLUME_IS_DIRTY from $Volume's $VOLUME_INFORMATION."""
+    def _volume_pointer(self):
         prefix = C.cast(self.handle, C.POINTER(SecurityAPIPrefix)).contents
         if prefix.magic != 0x09042009 or not prefix.volume:
             raise DriveError("Unsupported NTFS-3G security API layout.")
-        inode = self.lib.ntfs_inode_open(prefix.volume, 3)
+        return prefix.volume
+
+    def dirty(self):
+        """Read VOLUME_IS_DIRTY from $Volume's $VOLUME_INFORMATION."""
+        return bool(self._volume_flags() & 1)
+
+    def clear_dirty(self):
+        """Clear only VOLUME_IS_DIRTY, preserving all other on-disk flags."""
+        if not self.writable:
+            raise DriveError("Refusing to write through a read-only session.")
+        # One direct write of the flags field: NTFS-3G's ntfs_volume_write_flags() masks
+        # them with 0xc03f, dropping bits Windows sets. Unmount does not rewrite them.
+        self._volume_flags(write=self._volume_flags() & ~1)
+
+    def _volume_flags(self, write=None):
+        """Read (or preserve) the on-disk u16 flags without volume struct offsets."""
+        if write is not None and not self.writable:
+            raise DriveError("Refusing to write through a read-only session.")
+        inode = self.lib.ntfs_inode_open(self._volume_pointer(), 3)
         if not inode:
             raise DriveError("Cannot read the NTFS dirty flag: cannot open $Volume.")
         try:
@@ -169,14 +188,18 @@ class Volume:
                 buffer = C.create_string_buffer(12)
                 if self.lib.ntfs_attr_pread(attr, 0, 12, buffer) != 12:
                     raise DriveError("Cannot read the NTFS dirty flag: incomplete volume information.")
-                dirty = bool(int.from_bytes(buffer.raw[10:12], "little") & 1)
+                flags = int.from_bytes(buffer.raw[10:12], "little")
+                if write is not None:
+                    value = C.create_string_buffer(write.to_bytes(2, "little"))
+                    if self.lib.ntfs_attr_pwrite(attr, 10, 2, value) != 2:
+                        raise DriveError("Cannot write the NTFS volume flags.")
             finally:
                 self.lib.ntfs_attr_close(attr)
         finally:
             closed = self.lib.ntfs_inode_close(inode)
         if closed:
             raise DriveError("Cannot close $Volume after reading the NTFS dirty flag.")
-        return dirty
+        return flags
 
     def get(self, path):
         # NTFS-3G clears required size on failure, so use a bounded maximum buffer.

@@ -16,7 +16,23 @@ DIRTY_WARNING = ("Windows has marked this drive as needing a disk check (its NTF
                  "Linux won't mount it read-write until the flag is cleared. To clear it, copy off anything you need, "
                  "then either run chkdsk X: /f on Windows and inspect the drive here again afterwards, since a repair "
                  "can move files and reset their permissions, or run sudo ntfsfix -d on the partition on Linux, "
-                 "which clears the flag without repairing anything.")
+                 "which clears the flag without repairing anything; or, if a read-only chkdsk X: on Windows "
+                 "found no problems, clear it here with Clear Dirty Flag (CLI: clear-dirty).")
+
+CLEAR_DIRTY_CONFIRMATION = ("Clearing the dirty flag hides whatever Windows was concerned about. "
+                            "Run a read-only chkdsk X: on Windows first, and only clear it if that finds no problems. "
+                            "This clears only the dirty flag; it does not reset the journal or repair anything.")
+
+
+def clear_dirty(target, library=None, volume_factory=Volume):
+    target = validate_target(target)
+    with volume_factory(target, writable=True, library=library) as volume:
+        cleared = volume.dirty()
+        if cleared:
+            volume.clear_dirty()
+            if volume.dirty():
+                raise DriveError("NTFS dirty flag verification failed: the flag is still set.")
+    return {"target": target, "dirty": False, "cleared": cleared}
 
 
 def inspect(target, access="modify", library=None, volume_factory=Volume):

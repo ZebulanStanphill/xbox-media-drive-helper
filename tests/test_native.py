@@ -117,3 +117,39 @@ class VolumeDirtyTests(unittest.TestCase):
                 self.assertEqual(volume.dirty(), bool(flags & 1))
                 volume.lib.ntfs_attr_close.assert_called_once_with(456)
                 volume.lib.ntfs_inode_close.assert_called_once_with(123)
+
+    def test_clear_dirty_preserves_other_bits(self):
+        for flags in (1, 0x8003, 0x0181):
+            with self.subTest(flags=flags):
+                volume = self.volume()
+                volume.writable = True
+                def read(attr, offset, count, buffer):
+                    C.memmove(buffer, b"\0" * 10 + flags.to_bytes(2, "little"), 12)
+                    return 12
+                volume.lib.ntfs_attr_pread.side_effect = read
+                volume.lib.ntfs_attr_pwrite.return_value = 2
+                volume.clear_dirty()
+                call = volume.lib.ntfs_attr_pwrite.call_args.args
+                self.assertEqual(call[:3], (456, 10, 2))
+                self.assertEqual(C.string_at(call[3], 2), (flags & ~1).to_bytes(2, "little"))
+                volume.lib.ntfs_attr_pwrite.assert_called_once()
+
+    def test_clear_dirty_read_only_refused(self):
+        volume = self.volume()
+        volume.writable = False
+        with self.assertRaisesRegex(DriveError, "read-only"):
+            volume.clear_dirty()
+        volume.lib.ntfs_attr_pwrite.assert_not_called()
+
+    def test_clear_dirty_write_failure_closes_resources(self):
+        volume = self.volume()
+        volume.writable = True
+        def read(attr, offset, count, buffer):
+            C.memmove(buffer, b"\0" * 10 + b"\x81\x01", 12)
+            return 12
+        volume.lib.ntfs_attr_pread.side_effect = read
+        volume.lib.ntfs_attr_pwrite.return_value = -1
+        with self.assertRaisesRegex(DriveError, "Cannot write the NTFS volume flags"):
+            volume.clear_dirty()
+        self.assertEqual(volume.lib.ntfs_attr_close.call_count, 2)
+        self.assertEqual(volume.lib.ntfs_inode_close.call_count, 2)
