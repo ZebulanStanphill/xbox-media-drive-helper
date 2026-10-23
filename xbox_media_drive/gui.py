@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
 
 from . import DriveError
 from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
+from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 STYLE = """
@@ -240,6 +241,7 @@ class MainWindow(QMainWindow):
         self.image_path = ""
         self.disk_layout = None
         self.mode_backup = None
+        self.filesystem_check = None
         self.action = None
         self.followups = []
         root = QWidget()
@@ -338,7 +340,14 @@ class MainWindow(QMainWindow):
                              "pass it on to new content created in Windows.", "muted"))
         self.check = QPushButton("Inspect permissions")
         self.check.clicked.connect(self.inspect_volume)
-        prep.addWidget(self.check)
+        inspect_row = QHBoxLayout()
+        inspect_row.addWidget(self.check, 1)
+        # ntfsck is a Linux program; without it there is nothing to offer.
+        self.check_filesystem_button = QPushButton("Check Filesystem…")
+        self.check_filesystem_button.setVisible(bool(find_ntfsck()))
+        self.check_filesystem_button.clicked.connect(self.check_filesystem_volume)
+        inspect_row.addWidget(self.check_filesystem_button)
+        prep.addLayout(inspect_row)
         self.status = label("Select a volume, then inspect its permissions.", "muted")
         self.status.setTextFormat(Qt.PlainText)
         prep.addWidget(self.status)
@@ -447,8 +456,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.activity)
         layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
-                         self.tabs, self.library, self.clear_dirty_button, self.check_mode_button,
-                         self.switch_mode_button, self.restore_sector_button]
+                         self.tabs, self.library, self.check_filesystem_button, self.clear_dirty_button,
+                         self.check_mode_button, self.switch_mode_button, self.restore_sector_button]
         self.check_disk_access()
         QGuiApplication.instance().applicationStateChanged.connect(self.application_state_changed)
         if auto_refresh:
@@ -470,6 +479,7 @@ class MainWindow(QMainWindow):
     def set_target(self, path):
         if path != self.target_path:
             self.target_path = path
+            self.filesystem_check = None
             self.invalidate()
 
     def invalidate(self, *_):
@@ -584,13 +594,43 @@ class MainWindow(QMainWindow):
         else:
             self.log("Choose a volume first.")
 
+    def check_filesystem_volume(self):
+        if not self.target_path:
+            self.log("Choose a volume first.")
+            return
+        message = ("Check {} for problems with ntfsck?\n\nThe check is read-only: it never changes the drive. "
+                   "It can take a while on a large drive.").format(self.target_path)
+        if QMessageBox.question(self, "Check Filesystem", message) == QMessageBox.Yes:
+            self.run_filesystem_check()
+
+    def run_filesystem_check(self):
+        if self.offer_unmount(self.run_filesystem_check):
+            return
+        self.start("check", self.arguments("check"))
+
+    def remembered_check(self):
+        """The latest ntfsck result for the selected drive, unless the inspected volume has since changed."""
+        check = self.filesystem_check
+        if not check or check["target"] != self.target_path:
+            return None
+        identity = (self.inspection or {}).get("identity")
+        if check["identity"] and identity and check["identity"] != identity:
+            return None
+        return check
+
     def clear_dirty_volume(self):
         if not self.inspection or not self.inspection.get("dirty"):
             return
         if self.offer_unmount(self.clear_dirty_volume):
             return
         message = "Clear the NTFS dirty flag on {}?\n\n{}".format(self.target_path, CLEAR_DIRTY_CONFIRMATION)
-        if QMessageBox.question(self, "Clear Dirty Flag", message) == QMessageBox.Yes:
+        check = self.remembered_check()
+        if check:
+            message += "\n\n" + ("ntfsck found no problems on this drive at {}." if check["clean"] else
+                                  "ntfsck found problems on this drive at {}; don't clear the flag, "
+                                  "repair it in Windows instead.").format(check["time"])
+        default = QMessageBox.No if check and not check["clean"] else QMessageBox.NoButton
+        if QMessageBox.question(self, "Clear Dirty Flag", message, QMessageBox.Yes | QMessageBox.No, default) == QMessageBox.Yes:
             self.start("clear-dirty", self.arguments("clear-dirty") + ["--yes"])
 
     def prepare_volume(self):
@@ -744,7 +784,7 @@ class MainWindow(QMainWindow):
         else:
             text = "{} {}… Enter your administrator password if asked.".format(
                 {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on",
-                 "clear-dirty": "Clearing the NTFS dirty flag on"}[action],
+                 "clear-dirty": "Clearing the NTFS dirty flag on", "check": "Checking the filesystem on"}[action],
                 self.target_path)
         self.log(text)
         self.busy.setText(text)
@@ -797,7 +837,21 @@ class MainWindow(QMainWindow):
             self.status.setText(message)
             self.log(message)
             QApplication.alert(self)
+        elif self.action == "check":
+            clean = result["verdict"] == "clean"
+            self.filesystem_check = {"target": self.target_path, "identity": (self.inspection or {}).get("identity"),
+                                     "clean": clean, "time": datetime.now().strftime("%H:%M")}
+            message = ("ntfsck found no problems." if clean else
+                       "ntfsck found problems. Repair the drive in Windows with chkdsk X: /f; don't just clear its dirty flag.")
+            self.log(message)
+            if not self.inspection:
+                self.status.setText(message + " Inspect this volume before preparing it.")
+            if clean:
+                self.report(QMessageBox.Information, "No problems found", message)
+            else:
+                self.report(QMessageBox.Warning, "Problems found", CHECK_PROBLEMS_NOTE, details=result["output"])
         elif self.action == "clear-dirty":
+            self.filesystem_check = None
             self.invalidate()
             self.log("NTFS dirty flag cleared." if result["cleared"] else "NTFS dirty flag was already clear.")
             self.followups.append(self.inspect_volume)
@@ -827,6 +881,7 @@ class MainWindow(QMainWindow):
             self.report(QMessageBox.Information, title, message)
             self.followups.append(self.refresh_devices)
         else:
+            self.filesystem_check = None
             self.invalidate()
             if self.action == "prepare":
                 appended = result.get("appended", False)
@@ -857,7 +912,7 @@ class MainWindow(QMainWindow):
                                 "Files not recorded in the journal keep their current permissions.".format(
                                     self.target_path, result["restored"], result["already_original"]))
 
-    def report(self, icon, title, message, settings=False):
+    def report(self, icon, title, message, settings=False, details=None):
         """Show a result once the worker has finished, so the window is no longer busy behind the dialog."""
         QApplication.alert(self)
 
@@ -865,6 +920,8 @@ class MainWindow(QMainWindow):
             # macOS hides dialog titles, so the title is also the bold headline.
             box = QMessageBox(icon, title, title, QMessageBox.Close if settings else QMessageBox.Ok, self)
             box.setInformativeText(message)
+            if details:
+                box.setDetailedText(details)
             button = box.addButton("Open Privacy Settings", QMessageBox.AcceptRole) if settings else None
             box.exec()
             if button is not None and box.clickedButton() is button:

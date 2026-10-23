@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from xbox_media_drive import DriveError
+from xbox_media_drive.fsck import check_filesystem, find_ntfsck
 from xbox_media_drive.native import Volume
 from xbox_media_drive.operations import clear_dirty, inspect, prepare, restore
 from xbox_media_drive.security import AUTHENTICATED_USERS, Descriptor, MODIFY, acl_entries, signature
@@ -104,6 +105,18 @@ class NativeImageTests(unittest.TestCase):
         with ImageVolume(self.image, library=self.library) as volume:
             self.assertTrue(volume.dirty())
             self.assertEqual({entry.path: volume.get(entry.path) for entry in volume.walk()}, originals)
+
+    @unittest.skipUnless(find_ntfsck(), "Install ntfsprogs-plus (ntfsck in a root-owned system directory) on Linux")
+    def test_ntfsck_finds_a_fresh_image_clean_without_changing_it(self):
+        fresh = Path(self.temp.name) / "fresh.img"
+        with open(fresh, "wb") as out:
+            out.truncate(64 * 1024 * 1024)
+        self.tool("mkntfs", "-F", "-Q", "-L", "Xbox Test", str(fresh))
+        before = hashlib.sha256(fresh.read_bytes()).digest()
+        result = check_filesystem(str(fresh))
+        self.assertEqual((result["verdict"], result["exit_code"]), ("clean", 0))
+        self.assertEqual(result["checker"], find_ntfsck())
+        self.assertEqual(hashlib.sha256(fresh.read_bytes()).digest(), before)
 
     def test_dirty_flag_warns_and_allows_preparation(self):
         with ImageVolume(self.image, library=self.library) as volume:

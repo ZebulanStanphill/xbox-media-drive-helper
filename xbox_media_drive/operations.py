@@ -11,17 +11,21 @@ from .native import Volume
 from .security import Descriptor, grant, lost_auto_inherited, signature
 
 
+READ_ONLY_CHECK = ("a read-only chkdsk X: on Windows, or on Linux, Check Filesystem (CLI: check) if ntfsck "
+                   "is installed")
+
 DIRTY_WARNING = ("Windows has marked this drive as needing a disk check (its NTFS dirty flag is set), so it may be damaged. "
                  "NTFS-3G doesn't check for damage, so back up the drive before changing its permissions. "
-                 "Linux won't mount it read-write until the flag is cleared. To clear it, copy off anything you need, "
-                 "then either run chkdsk X: /f on Windows and inspect the drive here again afterwards, since a repair "
-                 "can move files and reset their permissions, or run sudo ntfsfix -d on the partition on Linux, "
-                 "which clears the flag without repairing anything; or, if a read-only chkdsk X: on Windows "
-                 "found no problems, clear it here with Clear Dirty Flag (CLI: clear-dirty).")
+                 "Linux won't mount it read-write until the flag is cleared.\n\n"
+                 "First run " + READ_ONLY_CHECK + ".\n"
+                 "- If it finds no problems, clear the flag with Clear Dirty Flag (CLI: clear-dirty), "
+                 "or with sudo ntfsfix -d on Linux.\n"
+                 "- If it finds problems, copy off anything you need, run chkdsk X: /f on Windows, then inspect the "
+                 "drive here again: a repair can move files and reset their permissions.")
 
 CLEAR_DIRTY_CONFIRMATION = ("Clearing the dirty flag hides whatever Windows was concerned about. "
-                            "Run a read-only chkdsk X: on Windows first, and only clear it if that finds no problems. "
-                            "This clears only the dirty flag; it does not reset the journal or repair anything.")
+                            "Run " + READ_ONLY_CHECK + " first, and only clear the flag if that finds no problems. "
+                            "This clears only the dirty flag; it doesn't reset the journal or repair anything.")
 
 
 def clear_dirty(target, library=None, volume_factory=Volume):

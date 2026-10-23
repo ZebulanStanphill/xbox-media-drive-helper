@@ -19,6 +19,7 @@ except ImportError:
     HAS_QT = False
 
 from xbox_media_drive import DriveError
+from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
 from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 
@@ -279,6 +280,194 @@ class GUITests(unittest.TestCase):
             worker.return_value.start.assert_called_once_with()
             self.window.finished()
         self.assertTrue(self.window.clear_dirty_button.isEnabled())
+
+    def test_check_filesystem_button_only_where_ntfsck_is_installed(self):
+        self.assertTrue(self.window.check_filesystem_button.isHidden())
+        for found in ("/usr/sbin/ntfsck", None):
+            with self.subTest(found=found), patch("xbox_media_drive.gui.find_ntfsck", return_value=found):
+                window = MainWindow(auto_refresh=False)
+                window.show()
+                self.assertEqual(window.check_filesystem_button.isVisible(), found is not None)
+                if found:
+                    self.assertEqual(window.check_filesystem_button.text(), "Check Filesystem…")
+                    window.check_filesystem_button.click()
+                    self.assertIn("Choose a volume first.", window.activity.toPlainText())
+                window.close()
+                window.deleteLater()
+
+    def test_check_filesystem_requires_confirmation_and_runs_cli(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.library.setText("/tmp/libntfs.dylib")
+        for answer in (QMessageBox.No, QMessageBox.Yes):
+            with self.subTest(answer=answer), patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                    patch.object(QMessageBox, "question", return_value=answer) as question, \
+                    patch.object(self.window, "start") as start:
+                self.window.check_filesystem_volume()
+                self.assertEqual(question.call_args.args[1], "Check Filesystem")
+                for text in ("/tmp/volume.img", "ntfsck", "read-only", "never changes the drive", "take a while"):
+                    self.assertIn(text, question.call_args.args[2])
+                if answer == QMessageBox.Yes:
+                    start.assert_called_once_with("check", ["--library", "/tmp/libntfs.dylib", "check", "/tmp/volume.img"])
+                else:
+                    start.assert_not_called()
+        self.window.set_target("")
+        with patch.object(QMessageBox, "question") as question, patch.object(self.window, "start") as start:
+            self.window.check_filesystem_volume()
+        question.assert_not_called()
+        start.assert_not_called()
+
+    def test_mounted_target_is_unmounted_then_the_filesystem_check_runs(self):
+        device = self.add_device(mounted=True)
+        self.window.set_target("/dev/disk9s1")
+        commands = []
+        result = json.dumps({"target": "/dev/disk9s1", "verdict": "clean", "output": ""})
+
+        def helper(*args, **kwargs):
+            commands.append(args[0])
+            return SimpleNamespace(stdout=result, stderr="", returncode=0)
+
+        with patch("xbox_media_drive.gui.is_mounted", side_effect=[True, False]), \
+                patch("xbox_media_drive.gui.unmount", return_value="/dev/disk9s1") as unmount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=False))]), \
+                patch("xbox_media_drive.gui.helper_command", side_effect=lambda arguments, elevate: ["helper"] + arguments), \
+                patch("xbox_media_drive.gui.subprocess.run", side_effect=helper), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as question, \
+                self.dialogs() as dialog:
+            self.window.check_filesystem_volume()
+            self.wait_for_idle()
+        self.assertEqual([call.args[1] for call in question.call_args_list], ["Check Filesystem", "Unmount volume"])
+        unmount.assert_called_once_with("/dev/disk9s1")
+        self.assertEqual(commands, [["helper", "check", "/dev/disk9s1"]])
+        self.assertEqual([title for title, text in dialog], ["No problems found"])
+        self.assertEqual(self.window.filesystem_check["clean"], True)
+
+    def test_filesystem_check_results_are_logged_and_shown(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "check"
+        details = []
+        with self.dialogs(lambda box: details.append(box.detailedText())) as dialog:
+            self.window.completed({"verdict": "clean", "exit_code": 0, "output": "", "target": "/tmp/volume.img"})
+            self.assertIn("ntfsck found no problems.", self.window.activity.toPlainText())
+            self.assertIn("ntfsck found no problems.", self.window.status.text())
+            self.window.followups.pop(0)()
+            self.window.completed({"verdict": "problems", "exit_code": 4, "output": "Inode 5 is corrupt\nsecond line",
+                                   "target": "/tmp/volume.img"})
+            self.assertIn("ntfsck found problems.", self.window.activity.toPlainText())
+            self.window.followups.pop(0)()
+        self.assertEqual(dialog, [("No problems found", "ntfsck found no problems."),
+                                  ("Problems found", CHECK_PROBLEMS_NOTE)])
+        self.assertEqual(details, ["", "Inode 5 is corrupt\nsecond line"])
+        # An existing inspection keeps its own status and the Prepare gate.
+        self.window.inspection = {"ready": True, "changes_needed": 1}
+        self.window.prepare_button.setEnabled(True)
+        self.window.status.setText("1 objects inspected")
+        self.window.completed({"verdict": "clean", "exit_code": 0, "output": ""})
+        self.assertEqual(self.window.status.text(), "1 objects inspected")
+        self.assertTrue(self.window.prepare_button.isEnabled())
+
+    def test_filesystem_check_failure_is_reported_like_other_failures(self):
+        self.window.set_target("/tmp/volume.img")
+        message = "ntfsck couldn't check the volume (exit 1).\nntfsck: not an NTFS volume"
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch("xbox_media_drive.gui.helper_command", return_value=["helper"]), \
+                patch("xbox_media_drive.gui.subprocess.run", return_value=SimpleNamespace(
+                    stdout="", stderr=json.dumps({"error": message}), returncode=1)), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.Yes), \
+                self.dialogs() as dialog:
+            self.window.check_filesystem_volume()
+            self.wait_for_idle()
+        self.assertEqual(dialog, [("Operation could not complete", message)])
+        self.assertIsNone(self.window.filesystem_check)
+
+    def test_filesystem_check_button_disabled_while_worker_runs(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.check_filesystem_button.show()
+        with patch("xbox_media_drive.gui.Worker") as worker:
+            self.window.start("check", ["check", "/tmp/volume.img"])
+            self.assertFalse(self.window.check_filesystem_button.isEnabled())
+            self.assertEqual(self.window.busy.text(),
+                             "Checking the filesystem on /tmp/volume.img… Enter your administrator password if asked.")
+            worker.return_value.start.assert_called_once_with()
+            self.window.finished()
+        self.assertTrue(self.window.check_filesystem_button.isEnabled())
+
+    def clear_dirty_prompt(self):
+        """Return the Clear Dirty Flag question's text and default button for the current state."""
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+            self.window.clear_dirty_volume()
+        self.assertEqual(question.call_args.args[3], QMessageBox.Yes | QMessageBox.No)
+        return question.call_args.args[2], question.call_args.args[4]
+
+    def finish_filesystem_check(self, verdict, time="09:41"):
+        self.window.action = "check"
+        with patch("xbox_media_drive.gui.datetime") as clock:
+            clock.now.return_value.strftime.return_value = time
+            self.window.completed({"verdict": verdict, "exit_code": 0 if verdict == "clean" else 4, "output": ""})
+        self.window.followups.clear()
+
+    def test_remembered_check_result_shapes_the_clear_dirty_confirmation(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.inspection = {"dirty": True, "identity": {"boot_sha256": "volume-id"}}
+        message, default = self.clear_dirty_prompt()
+        self.assertTrue(message.endswith(CLEAR_DIRTY_CONFIRMATION))
+        self.assertEqual(default, QMessageBox.NoButton)
+        self.finish_filesystem_check("clean")
+        message, default = self.clear_dirty_prompt()
+        self.assertTrue(message.endswith(CLEAR_DIRTY_CONFIRMATION + "\n\nntfsck found no problems on this drive at 09:41."))
+        self.assertEqual(default, QMessageBox.NoButton)
+        self.finish_filesystem_check("problems", "10:02")
+        message, default = self.clear_dirty_prompt()
+        self.assertTrue(message.endswith(CLEAR_DIRTY_CONFIRMATION + "\n\nntfsck found problems on this drive at 10:02; "
+                                         "don't clear the flag, repair it in Windows instead."))
+        self.assertEqual(default, QMessageBox.No)
+
+    def finish_inspection(self, volume="volume-id"):
+        self.window.action = "inspect"
+        self.window.completed({"ready": True, "changes_needed": 1, "objects": 1, "skipped_reparse_points": [],
+                               "blockers": [], "dirty": True, "identity": {"boot_sha256": volume}})
+
+    def remembered_text(self):
+        return self.clear_dirty_prompt()[0].replace(CLEAR_DIRTY_CONFIRMATION, "")
+
+    def test_remembered_check_survives_inspection_but_not_a_changed_target_or_volume(self):
+        self.window.set_target("/tmp/volume.img")
+        # A check made before inspecting applies to the volume inspected afterwards.
+        self.finish_filesystem_check("problems")
+        self.finish_inspection()
+        self.assertIn("ntfsck found problems", self.remembered_text())
+        self.window.invalidate()
+        self.assertIsNotNone(self.window.filesystem_check)
+        # Selecting the same target again is not a change.
+        self.window.set_target("/tmp/volume.img")
+        self.assertIsNotNone(self.window.filesystem_check)
+        # A check made on an inspected volume is not used for a different volume at the same path.
+        self.finish_inspection()
+        self.finish_filesystem_check("clean")
+        self.finish_inspection("other-volume")
+        self.assertNotIn("ntfsck", self.remembered_text())
+        self.finish_inspection()
+        self.assertIn("ntfsck found no problems", self.remembered_text())
+        # A different target forgets it, even when the original comes back.
+        self.window.set_target("/tmp/another.img")
+        self.assertIsNone(self.window.filesystem_check)
+        self.window.set_target("/tmp/volume.img")
+        self.finish_inspection()
+        self.assertNotIn("ntfsck", self.remembered_text())
+
+    def test_remembered_check_is_forgotten_after_changes_to_the_drive(self):
+        for action, result in (("clear-dirty", {"cleared": True}),
+                               ("prepare", {"changed": 1, "journal": "/tmp/j.sqlite"}),
+                               ("restore", {"state": "restored", "restored": 1, "already_original": 0,
+                                            "conflicts": [], "missing": []})):
+            with self.subTest(action=action):
+                self.window.set_target("/tmp/volume.img")
+                self.finish_filesystem_check("clean")
+                self.assertIsNotNone(self.window.filesystem_check)
+                self.window.action = action
+                self.window.completed(result)
+                self.window.followups.clear()
+                self.assertIsNone(self.window.filesystem_check)
 
     def test_backup_warning_is_always_visible_and_repeated_before_changes(self):
         self.assertTrue(self.window.backup_warning.isVisible())

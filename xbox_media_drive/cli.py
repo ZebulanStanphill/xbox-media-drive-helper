@@ -6,6 +6,7 @@ import sys
 
 from . import DriveError, __version__
 from .devices import discover, whole_disk, validate_whole_disk
+from .fsck import CHECK_PROBLEMS_NOTE, check_filesystem, find_ntfsck
 from .layout import analyze, read_head, restore_sector, switch
 from .native import load_library
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, clear_dirty, inspect, journal_info, prepare, restore
@@ -30,6 +31,8 @@ def parser():
     action.add_argument("--restore", metavar="FILE", help="Restore a saved first sector")
     mode.add_argument("--backup", help="New host-side first-sector backup (required with --set)")
     mode.add_argument("--yes", action="store_true", help="Confirm the displayed disk noninteractively")
+    check = sub.add_parser("check", help="Read-only filesystem check with ntfsck (Linux, if installed)")
+    check.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
     clear = sub.add_parser("clear-dirty", help="Clear the NTFS dirty flag after Windows' read-only chkdsk finds no problems")
     clear.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
     clear.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
@@ -63,7 +66,8 @@ def main(argv=None):
             result = {"devices": [device.to_dict() for device in discover()]}
         elif args.command == "doctor":
             result = {"version": __version__, "platform": sys.platform,
-                      "library": str(load_library(args.library)._name), "root": os.getuid() == 0}
+                      "library": str(load_library(args.library)._name), "root": os.getuid() == 0,
+                      "ntfsck": find_ntfsck()}
         elif args.command == "journal":
             result = journal_info(args.backup)
         elif args.command == "mode":
@@ -88,6 +92,8 @@ def main(argv=None):
                 result = switch(disk, args.set, args.backup) if args.set else restore_sector(disk, args.restore)
             else:
                 result = dict(analyze(read_head(disk)), disk=disk)
+        elif args.command == "check":
+            result = check_filesystem(args.target)
         elif args.command == "clear-dirty":
             print(CLEAR_DIRTY_CONFIRMATION, file=sys.stderr)
             if not args.yes:
@@ -126,8 +132,11 @@ def main(argv=None):
                 result = restore(args.target, args.backup, args.library, progress)
         if result.get("dirty") and not args.json:
             print(DIRTY_WARNING, file=sys.stderr)
+        if result.get("verdict") == "problems" and not args.json:
+            print(CHECK_PROBLEMS_NOTE, file=sys.stderr)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))
-        return 3 if result.get("state") == "restore-incomplete" or result.get("ready") is False else 0
+        return 3 if (result.get("state") == "restore-incomplete" or result.get("ready") is False
+                     or result.get("verdict") == "problems") else 0
     except (DriveError, OSError, sqlite3.Error, ValueError) as exc:
         message = str(exc)
         print(json.dumps({"error": message}) if args.json else "Error: " + message, file=sys.stderr)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.cli import main
+from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
 from xbox_media_drive.operations import DIRTY_WARNING
 
 
@@ -32,6 +33,43 @@ class CLITests(unittest.TestCase):
                 self.assertIn("read-only chkdsk X:", error)
                 if expected:
                     self.assertTrue(json.loads(output)["cleared"])
+
+    def test_check_exit_codes_and_problems_note(self):
+        for verdict, expected, noted in (("clean", 0, False), ("problems", 3, True)):
+            for machine in (False, True):
+                with self.subTest(verdict=verdict, json=machine), \
+                        patch("sys.stdin.isatty", return_value=False), \
+                        patch("xbox_media_drive.cli.check_filesystem",
+                              return_value={"target": "/dev/test", "verdict": verdict, "output": "details"}) as check:
+                    status, output, error = self.call((["--json"] if machine else []) + ["check", "/dev/test"])
+                check.assert_called_once_with("/dev/test")
+                self.assertEqual(status, expected)
+                self.assertEqual(json.loads(output)["verdict"], verdict)
+                self.assertEqual(CHECK_PROBLEMS_NOTE in error, noted and not machine)
+                if machine:
+                    self.assertEqual(error, "")
+
+    def test_check_failures_have_exit_one(self):
+        with patch("xbox_media_drive.cli.check_filesystem",
+                   side_effect=DriveError("ntfsck couldn't check the volume (exit 1).")):
+            status, output, error = self.call(["--json", "check", "/dev/test"])
+        self.assertEqual(status, 1)
+        self.assertEqual(output, "")
+        self.assertEqual(json.loads(error), {"error": "ntfsck couldn't check the volume (exit 1)."})
+
+    def test_check_does_not_use_the_native_library(self):
+        with patch("xbox_media_drive.cli.check_filesystem", return_value={"verdict": "clean"}), \
+                patch("xbox_media_drive.cli.load_library") as native:
+            self.assertEqual(self.call(["check", "/dev/test"])[0], 0)
+        native.assert_not_called()
+
+    def test_doctor_reports_ntfsck(self):
+        for found in ("/usr/sbin/ntfsck", None):
+            with self.subTest(found=found), patch("xbox_media_drive.cli.load_library"), \
+                    patch("xbox_media_drive.cli.find_ntfsck", return_value=found):
+                status, output, _ = self.call(["--json", "doctor"])
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(output)["ntfsck"], found)
 
     def test_dirty_warning_and_json_for_each_operation(self):
         for command in ("inspect", "prepare", "restore"):

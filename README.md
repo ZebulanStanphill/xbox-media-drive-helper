@@ -129,6 +129,12 @@ To restore the recorded permissions after the initial preparation and any append
 sudo .venv/bin/xbox-media-drive restore /dev/disk4s1 --backup "$PWD/media-original.sqlite"
 ```
 
+On Linux, if [ntfsck](https://github.com/ntfsprogs-plus/ntfsprogs-plus) is installed (`sudo apt install ntfsprogs-plus` on Debian and Ubuntu), `check` runs a read-only filesystem check on the unmounted partition and exits `3` if it finds problems. See [Preservation and recovery](#preservation-and-recovery) for what it runs and its limits.
+
+```sh
+sudo .venv/bin/xbox-media-drive check /dev/sdb1
+```
+
 After a read-only `chkdsk X:` on Windows finds no problems, clear a flag that remains set:
 
 ```sh
@@ -143,7 +149,7 @@ sudo .venv/bin/xbox-media-drive --json prepare /dev/sdb1 --backup /home/me/media
 sudo .venv/bin/xbox-media-drive journal /home/me/media.sqlite
 ```
 
-`--json` writes one result object to stdout; native diagnostics and progress go to stderr. Exit codes: `0` success; `1` failure; `2` invalid arguments; `3` inspection blockers or an incomplete restore; `130` interruption. Library discovery failures explain how to install or select the dependency.
+`--json` writes one result object to stdout; native diagnostics and progress go to stderr. Exit codes: `0` success; `1` failure; `2` invalid arguments; `3` inspection blockers, an incomplete restore or problems found by `check`; `130` interruption. Library discovery failures explain how to install or select the dependency.
 
 ## Game drive mode (switching between Xbox game storage and PC-readable)
 
@@ -198,7 +204,14 @@ This behavior comes from community research and has **not been tested on real ha
 
 A journal reverses this tool's recorded permission changes, not unknown changes made by another utility. If your drive already has Xbox app permissions, inspection reports that; the tool cannot reconstruct permissions from before its first use. It never runs repair, clears hibernation, or enables a force/recovery mount. On request, it can clear only the dirty flag, without repairing anything or resetting the NTFS journal. If NTFS-3G refuses a writable session, the error explains why when it can tell. The usual cause is an NTFS journal left open by an Xbox or Windows PC; inspection still works meanwhile. To close it, connect the drive to a Windows PC and eject it with Safely Remove Hardware (confirmed on a test drive), or on Linux run `sudo ntfsfix -d` on the NTFS partition, which discards any changes Windows hadn't finished writing. Plain `ntfsfix` also sets the dirty flag.
 
-Windows sets the dirty flag when it finds a problem, and Explorer then says there's a problem with the drive. Ejecting doesn't clear it; a completed `chkdsk /f` or `ntfsfix -d` does. The app warns about the flag during inspection, preparation and restore, but doesn't refuse permission changes. If a read-only `chkdsk X:` on Windows finds no problems, use **Clear Dirty Flag…** in the app or `clear-dirty` in the CLI. Clearing the flag hides whatever Windows was concerned about; it does not repair anything or reset the journal. Linux's kernel NTFS driver (ntfs3) refuses read-write mounts of dirty drives, and of drives whose journal it can't replay, so a file manager may report "wrong fs type, bad option, bad superblock". `sudo dmesg | grep ntfs3` shows which; `udisksctl mount -b /dev/sdX1 -o ro` mounts the partition read-only meanwhile. Copy off anything you need before letting Windows repair a drive, then inspect it again: on a test drive, a repair moved files into `found.000` and reset their permissions.
+Windows sets the dirty flag when it finds a problem, and Explorer then says there's a problem with the drive. Ejecting doesn't clear it; a completed `chkdsk /f` or `ntfsfix -d` does. The app warns about the flag during inspection, preparation and restore, but doesn't refuse permission changes. If a read-only `chkdsk X:` on Windows finds no problems, or on Linux the optional ntfsck check below does, use **Clear Dirty Flag…** in the app or `clear-dirty` in the CLI. Clearing the flag hides whatever Windows was concerned about; it does not repair anything or reset the journal. Linux's kernel NTFS driver (ntfs3) refuses read-write mounts of dirty drives, and of drives whose journal it can't replay, so a file manager may report "wrong fs type, bad option, bad superblock". `sudo dmesg | grep ntfs3` shows which; `udisksctl mount -b /dev/sdX1 -o ro` mounts the partition read-only meanwhile. Copy off anything you need before letting Windows repair a drive, then inspect it again: on a test drive, a repair moved files into `found.000` and reset their permissions.
+
+**Optional filesystem check (Linux).** NTFS-3G has no checker, so this app can't tell whether a drive is damaged. If [ntfsck from ntfsprogs-plus](https://github.com/ntfsprogs-plus/ntfsprogs-plus), an open-source NTFS checker, is installed (`sudo apt install ntfsprogs-plus` on Debian and Ubuntu; other distributions package it under the same name), the app can run it for you: **Check Filesystem…** in the desktop app, or `check` in the CLI. The button appears only when ntfsck is found, and `doctor` reports where.
+
+- **What runs.** Only `ntfsck -n -q` on the unmounted partition or image. `-n` opens the device read-only and answers no to every repair; the app never runs ntfsck in any other mode. It looks for ntfsck only in `/usr/sbin`, `/usr/bin`, `/sbin` and `/bin`, never through `PATH`, and uses it only if root owns it and its directory and others can't write to either.
+- **Results.** Exit code `0` means no problems; `4` means problems that ntfsck left uncorrected (`check` exits `3`). Any other exit code means ntfsck gave no verdict, and the app reports an error with its output. **Clear Dirty Flag…** mentions the latest result for the selected drive.
+- **Limits.** ntfsck is young (1.0.0, December 2025), so it can report problems that aren't real. It doesn't replay the NTFS journal, and its documentation recommends repairing journaled volumes in Windows. There are no macOS builds. Windows' `chkdsk` remains authoritative for drives last used by Windows or an Xbox.
+- **If it reports problems,** don't clear the dirty flag. Copy off anything you need, run `chkdsk X: /f` on Windows, then inspect the drive again here.
 
 ## Tests
 
@@ -209,7 +222,7 @@ Windows sets the dirty flag when it finds a problem, and Explorer then says ther
 
 The ordinary suite covers binary descriptor parsing, ACL preservation/inheritance, deny handling, CLI behavior, GUI gating/layout/authorization quoting, wrong-volume refusal, renamed/reused records, conflicts, failed journal writes, interrupted preparation and repeatable restoration. GUI checks are skipped if PySide6 is not installed.
 
-The native suite builds an **image-only test harness** against NTFS-3G and creates disposable 64 MiB NTFS images, including nested directories, Unicode names, hard links, a Windows system folder and Windows-style auto-inherited descriptors. It exercises the real library's enumeration, security reads/writes and flushes, verifies that read-only inspection changes no image bytes, checks media bytes and the unchanged boot sector, and tests interruption recovery. A test-only context constructor permits owned regular-file images without root; production always uses NTFS-3G's root-checking initializer, which is tested separately. The harness refuses devices and is not loaded by the application. The native suite is skipped by ordinary discovery and run explicitly by the second command.
+The native suite builds an **image-only test harness** against NTFS-3G and creates disposable 64 MiB NTFS images, including nested directories, Unicode names, hard links, a Windows system folder and Windows-style auto-inherited descriptors. It exercises the real library's enumeration, security reads/writes and flushes, verifies that read-only inspection changes no image bytes, checks media bytes and the unchanged boot sector, and tests interruption recovery. A test-only context constructor permits owned regular-file images without root; production always uses NTFS-3G's root-checking initializer, which is tested separately. The harness refuses devices and is not loaded by the application. When ntfsck is installed in a system directory, the native suite also checks that it reports a fresh image clean and leaves it byte-for-byte unchanged. The native suite is skipped by ordinary discovery and run explicitly by the second command.
 
 Upstream API: [NTFS-3G security.h](https://github.com/tuxera/ntfs-3g/blob/2026.9.28/include/ntfs-3g/security.h), [security.c](https://github.com/tuxera/ntfs-3g/blob/2026.9.28/libntfs-3g/security.c), [release and checksums](https://github.com/tuxera/ntfs-3g/releases/tag/2026.9.28).
 
