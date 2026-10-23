@@ -68,6 +68,25 @@ class NativeImageTests(unittest.TestCase):
     def inspect(self):
         return inspect(self.image, library=self.library, volume_factory=ImageVolume)
 
+    def test_dirty_flag_warns_and_allows_preparation(self):
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertFalse(volume.dirty())
+        self.assertFalse(self.inspect()["dirty"])
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            volume.shim.xmd_fixture_dirty.argtypes = [C.c_void_p]
+            volume.shim.xmd_fixture_dirty.restype = C.c_int
+            self.assertEqual(volume.shim.xmd_fixture_dirty(volume.handle), 0)
+        with ImageVolume(self.image, library=self.library) as volume:
+            self.assertTrue(volume.dirty())
+        info = self.inspect()
+        self.assertTrue(info["dirty"])
+        self.assertTrue(info["ready"])
+        result = prepare(self.image, self.backup, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(result["state"], "prepared")
+        self.assertTrue(result["dirty"])
+        self.assertTrue(restore(self.image, self.backup, library=self.library,
+                                volume_factory=ImageVolume)["dirty"])
+
     def test_open_journal_refuses_writes_without_changing_image_or_acls(self):
         with ImageVolume(self.image, writable=True, library=self.library) as volume:
             originals = {entry.path: volume.get(entry.path) for entry in volume.walk()}

@@ -99,3 +99,9 @@ int xmd_fixture_open_journal(struct SECURITY_API *api)
         result = -1;
     return result;
 }
+
+int xmd_fixture_dirty(struct SECURITY_API *api)
+{
+    ntfs_volume *vol = api->security.vol;
+    return ntfs_volume_write_flags(vol, vol->flags | VOLUME_IS_DIRTY);
+}

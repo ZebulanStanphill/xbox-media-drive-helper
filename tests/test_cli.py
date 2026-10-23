@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from xbox_media_drive import DriveError
 from xbox_media_drive.cli import main
+from xbox_media_drive.operations import DIRTY_WARNING
 
 
 class CLITests(unittest.TestCase):
@@ -14,6 +15,23 @@ class CLITests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = main(arguments)
         return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_dirty_warning_and_json_for_each_operation(self):
+        for command in ("inspect", "prepare", "restore"):
+            for dirty in (False, True):
+                for machine in (False, True):
+                    with self.subTest(command=command, dirty=dirty, json=machine):
+                        result = {"dirty": dirty, "ready": True, "state": "restored"}
+                        args = [command, "/dev/test"]
+                        if command != "inspect":
+                            args += ["--backup", "host.sqlite", "--yes"]
+                        if machine:
+                            args.insert(0, "--json")
+                        with patch("xbox_media_drive.cli." + command, return_value=result):
+                            status, output, error = self.call(args)
+                        self.assertEqual(status, 0)
+                        self.assertEqual(json.loads(output)["dirty"], dirty)
+                        self.assertEqual(DIRTY_WARNING in error, dirty and not machine)
 
     def test_json_listing(self):
         with patch("xbox_media_drive.cli.discover", return_value=[]):

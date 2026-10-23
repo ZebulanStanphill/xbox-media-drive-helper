@@ -19,6 +19,7 @@ except ImportError:
     HAS_QT = False
 
 from xbox_media_drive import DriveError
+from xbox_media_drive.operations import DIRTY_WARNING
 
 
 @unittest.skipUnless(HAS_QT, "Install the gui extra to test the desktop interface")
@@ -210,6 +211,30 @@ class GUITests(unittest.TestCase):
         self.assertIn("Mac or Linux PC won't have app access", dialog[0][1])
         self.assertIn("Files copied in Windows inherit access automatically", dialog[0][1])
         self.assertIn("Added 2 objects", self.window.status.text())
+
+    def test_dirty_warning_display_confirmation_and_clear(self):
+        self.window.set_target("/tmp/volume.img")
+        result = {"ready": True, "changes_needed": 1, "objects": 1,
+                  "skipped_reparse_points": [], "blockers": [], "dirty": True,
+                  "identity": {"boot_sha256": "volume-id"}}
+        self.window.action = "inspect"
+        self.window.completed(result)
+        self.assertFalse(self.window.dirty_warning.isHidden())
+        self.assertEqual(self.window.dirty_warning.text(), DIRTY_WARNING)
+        self.assertTrue(self.window.prepare_button.isEnabled())
+        with patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                patch.object(QFileDialog, "getSaveFileName", return_value=("/tmp/new-journal.sqlite", "")), \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+            self.window.prepare_volume()
+        self.assertIn(DIRTY_WARNING, question.call_args.args[2])
+        self.window.completed(dict(result, dirty=False))
+        self.assertTrue(self.window.dirty_warning.isHidden())
+        self.window.completed(result)
+        self.window.set_target("/tmp/another.img")
+        self.assertTrue(self.window.dirty_warning.isHidden())
+        self.window.completed(result)
+        self.window.invalidate()
+        self.assertTrue(self.window.dirty_warning.isHidden())
 
     def test_backup_warning_is_always_visible_and_repeated_before_changes(self):
         self.assertTrue(self.window.backup_warning.isVisible())

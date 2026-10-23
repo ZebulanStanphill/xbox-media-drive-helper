@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
 
 from . import DriveError
 from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
+from .operations import DIRTY_WARNING
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -341,6 +342,10 @@ class MainWindow(QMainWindow):
         self.status = label("Select a volume, then inspect its permissions.", "muted")
         self.status.setTextFormat(Qt.PlainText)
         prep.addWidget(self.status)
+        self.dirty_warning = label(DIRTY_WARNING, "warning")
+        self.dirty_warning.setTextFormat(Qt.PlainText)
+        self.dirty_warning.hide()
+        prep.addWidget(self.dirty_warning)
         self.prepare_button = QPushButton("Prepare for Xbox…")
         self.prepare_button.setObjectName("primary")
         self.prepare_button.setEnabled(False)
@@ -465,6 +470,7 @@ class MainWindow(QMainWindow):
 
     def invalidate(self, *_):
         self.inspection = None
+        self.dirty_warning.hide()
         self.prepare_button.setEnabled(False)
         self.status.setText("Inspect this volume before preparing it." if self.target_path else
                             "Select a volume, then inspect its permissions.")
@@ -610,6 +616,8 @@ class MainWindow(QMainWindow):
             self.inspection["changes_needed"], backup)
         message = "Grant app access on {}?\n\nBack up the drive first if you haven't.\n\n{}\n\nKeep this journal: it is the only record used to restore original permissions automatically. If it is lost, the ALL APPLICATION PACKAGES and Authenticated Users entries added by this app must be removed manually in Windows.".format(
             self.target_path, journal_message)
+        if self.inspection.get("dirty"):
+            message += "\n\n" + DIRTY_WARNING
         if QMessageBox.question(self, "Prepare for Xbox", message) == QMessageBox.Yes:
             self.start("prepare", self.arguments("prepare") + ["--access", self.access.currentData(), "--backup", backup,
                        "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"] + (["--append"] if append else []))
@@ -697,6 +705,8 @@ class MainWindow(QMainWindow):
     def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False, whole=False):
         if self.worker is not None:
             return
+        if action == "inspect":
+            self.invalidate()
         if listing and not keep_inspection:
             self.invalidate()
         self.action = action
@@ -757,6 +767,7 @@ class MainWindow(QMainWindow):
             self.followups.insert(0, lambda: self.start("list", listing=True, keep_inspection=True))
         elif self.action == "inspect":
             self.inspection = result
+            self.dirty_warning.setVisible(bool(result.get("dirty")))
             self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0)
             message = "{} objects inspected · {} need changes · {} reparse points skipped".format(
                 result["objects"], result["changes_needed"], len(result["skipped_reparse_points"]))

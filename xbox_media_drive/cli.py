@@ -8,7 +8,7 @@ from . import DriveError, __version__
 from .devices import discover, whole_disk, validate_whole_disk
 from .layout import analyze, read_head, restore_sector, switch
 from .native import load_library
-from .operations import inspect, journal_info, prepare, restore
+from .operations import DIRTY_WARNING, inspect, journal_info, prepare, restore
 
 
 def parser():
@@ -111,6 +111,8 @@ def main(argv=None):
                                  expected_boot=args.expect_volume, append=args.append)
             else:
                 result = restore(args.target, args.backup, args.library, progress)
+        if result.get("dirty") and not args.json:
+            print(DIRTY_WARNING, file=sys.stderr)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))
         return 3 if result.get("state") == "restore-incomplete" or result.get("ready") is False else 0
     except (DriveError, OSError, sqlite3.Error, ValueError) as exc:

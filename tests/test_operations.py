@@ -33,6 +33,7 @@ class MemoryVolume:
         self.fail_at = None
         self.writes = 0
         self.skipped = []
+        self.is_dirty = False
 
     def __call__(self, *args, **kwargs):
         return self
@@ -42,6 +43,9 @@ class MemoryVolume:
 
     def __exit__(self, *args):
         pass
+
+    def dirty(self):
+        return self.is_dirty
 
     def walk(self):
         for path, (ref, directory, raw) in self.files.items():
@@ -79,6 +83,15 @@ class OperationTests(unittest.TestCase):
 
     def restore(self):
         return restore(self.target, self.backup, volume_factory=self.volume)
+
+    def test_dirty_flag_warns_without_blocking_operations(self):
+        self.assertFalse(inspect(self.target, volume_factory=self.volume)["dirty"])
+        self.volume.is_dirty = True
+        info = inspect(self.target, volume_factory=self.volume)
+        self.assertTrue(info["dirty"])
+        self.assertTrue(info["ready"])
+        self.assertTrue(self.prepare()["dirty"])
+        self.assertTrue(self.restore()["dirty"])
 
     def test_read_only_inspection_and_round_trip(self):
         info = inspect(self.target, volume_factory=self.volume)

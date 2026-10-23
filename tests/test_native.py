@@ -1,11 +1,12 @@
 """Classify failed NTFS sessions without opening devices."""
+import ctypes as C
 import errno
 import os
 import unittest
 from unittest.mock import Mock, patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.native import NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, Volume
+from xbox_media_drive.native import NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, SecurityAPIPrefix, Volume
 
 
 class VolumeOpenTests(unittest.TestCase):
@@ -75,3 +76,44 @@ class VolumeOpenTests(unittest.TestCase):
                 message, initializer, _ = self.failure(error)
                 self.assertIn(expected, message)
                 self.assertEqual(initializer.call_count, 1)
+
+
+class VolumeDirtyTests(unittest.TestCase):
+    def volume(self):
+        volume = Volume.__new__(Volume)
+        volume.lib = Mock()
+        volume.lib.ntfs_inode_open.return_value = 123
+        volume.lib.ntfs_attr_open.return_value = 456
+        volume.lib.ntfs_inode_close.return_value = 0
+        prefix = SecurityAPIPrefix()
+        prefix.magic = 0x09042009
+        prefix.volume = 789
+        volume.handle = C.pointer(prefix)
+        return volume
+
+    def test_unreadable_flag_raises_and_closes_resources(self):
+        for failure in ("inode", "attribute", "short-read"):
+            with self.subTest(failure=failure):
+                volume = self.volume()
+                if failure == "inode":
+                    volume.lib.ntfs_inode_open.return_value = None
+                elif failure == "attribute":
+                    volume.lib.ntfs_attr_open.return_value = None
+                else:
+                    volume.lib.ntfs_attr_pread.return_value = 11
+                with self.assertRaisesRegex(DriveError, "Cannot read the NTFS dirty flag"):
+                    volume.dirty()
+                self.assertEqual(volume.lib.ntfs_inode_close.call_count, failure != "inode")
+                self.assertEqual(volume.lib.ntfs_attr_close.call_count, failure == "short-read")
+
+    def test_other_flags_do_not_mean_dirty(self):
+        for flags in (0, 1, 2, 0x8001):
+            with self.subTest(flags=flags):
+                volume = self.volume()
+                def read(attr, offset, count, buffer):
+                    C.memmove(buffer, b"\0" * 10 + flags.to_bytes(2, "little"), 12)
+                    return 12
+                volume.lib.ntfs_attr_pread.side_effect = read
+                self.assertEqual(volume.dirty(), bool(flags & 1))
+                volume.lib.ntfs_attr_close.assert_called_once_with(456)
+                volume.lib.ntfs_inode_close.assert_called_once_with(123)

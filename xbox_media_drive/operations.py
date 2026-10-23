@@ -11,6 +11,14 @@ from .native import Volume
 from .security import Descriptor, grant, lost_auto_inherited, signature
 
 
+DIRTY_WARNING = ("Windows has marked this drive as needing a disk check (its NTFS dirty flag is set), so it may be damaged. "
+                 "NTFS-3G doesn't check for damage, so back up the drive before changing its permissions. "
+                 "Linux won't mount it read-write until the flag is cleared. To clear it, copy off anything you need, "
+                 "then either run chkdsk X: /f on Windows and inspect the drive here again afterwards, since a repair "
+                 "can move files and reset their permissions, or run sudo ntfsfix -d on the partition on Linux, "
+                 "which clears the flag without repairing anything.")
+
+
 def inspect(target, access="modify", library=None, volume_factory=Volume):
     target = validate_target(target)
     info = identity(target)
@@ -18,6 +26,7 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
     blockers = []
     previously_prepared = False
     with volume_factory(target, library=library) as volume:
+        dirty = volume.dirty()
         for entry in volume.walk():
             raw = volume.get(entry.path)
             total += 1
@@ -32,7 +41,7 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
                     blockers.append({"path": entry.path, "reason": str(exc)})
         skipped = volume.skipped
         system_skipped = getattr(volume, "system_skipped", [])
-    return {"target": target, "identity": info, "objects": total, "directories": directories,
+    return {"target": target, "dirty": dirty, "identity": info, "objects": total, "directories": directories,
             "changes_needed": changes, "previously_prepared": previously_prepared,
             "access": access, "blockers": blockers,
             "skipped_reparse_points": skipped, "skipped_system_paths": system_skipped, "ready": not blockers}
@@ -118,6 +127,7 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
         touched = False
         try:
             with volume_factory(target, writable=True, library=library) as volume:
+                dirty = volume.dirty()
                 if identity(target) != info:
                     raise DriveError("The target volume changed while opening it. No permissions changed.")
                 # Complete preflight and journal every proposed change BEFORE writing any ACL.
@@ -188,7 +198,7 @@ def prepare(target, backup, access="modify", library=None, progress=lambda value
             except sqlite3.Error:
                 pass
             raise
-    return {"target": target, "changed": changed, "journal": backup, "state": "prepared", "appended": append}
+    return {"target": target, "dirty": dirty, "changed": changed, "journal": backup, "state": "prepared", "appended": append}
 
 
 def restore(target, backup, library=None, progress=lambda value: None, volume_factory=Volume):
@@ -204,6 +214,7 @@ def restore(target, backup, library=None, progress=lambda value: None, volume_fa
         put_meta(db, "state", "restoring")
         try:
             with volume_factory(target, writable=True, library=library) as volume:
+                dirty = volume.dirty()
                 if get_meta(db, "identity") != identity(target):
                     raise DriveError("The target volume changed while opening it. No permissions changed.")
                 # Include the sequence number: a deleted/reused MFT slot is a new object.
@@ -239,7 +250,7 @@ def restore(target, backup, library=None, progress=lambda value: None, volume_fa
             except sqlite3.Error:
                 pass
             raise
-    return {"target": target, "restored": restored, "already_original": unchanged,
+    return {"target": target, "dirty": dirty, "restored": restored, "already_original": unchanged,
             "conflicts": conflicts, "missing": missing, "state": state, "journal": backup}
 
 

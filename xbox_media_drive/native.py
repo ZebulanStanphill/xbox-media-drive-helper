@@ -93,6 +93,14 @@ def load_library(explicit=None):
             lib.ntfs_readdir.restype = C.c_int
             lib.ntfs_inode_close.argtypes = [C.c_void_p]
             lib.ntfs_inode_close.restype = C.c_int
+            lib.ntfs_inode_open.argtypes = [C.c_void_p, C.c_uint64]
+            lib.ntfs_inode_open.restype = C.c_void_p
+            lib.ntfs_attr_open.argtypes = [C.c_void_p, C.c_uint32, C.c_void_p, C.c_uint32]
+            lib.ntfs_attr_open.restype = C.c_void_p
+            lib.ntfs_attr_pread.argtypes = [C.c_void_p, C.c_int64, C.c_int64, C.c_void_p]
+            lib.ntfs_attr_pread.restype = C.c_int64
+            lib.ntfs_attr_close.argtypes = [C.c_void_p]
+            lib.ntfs_attr_close.restype = None
             return lib
         except (OSError, AttributeError) as exc:
             errors.append(str(exc))
@@ -143,6 +151,32 @@ class Volume:
         if handle and not self.lib.ntfs_leave_file_security(handle):
             if typ is None:
                 raise DriveError("NTFS-3G could not close/flush the volume. Keep the recovery journal and check the drive.")
+
+    def dirty(self):
+        """Read VOLUME_IS_DIRTY from $Volume's $VOLUME_INFORMATION."""
+        prefix = C.cast(self.handle, C.POINTER(SecurityAPIPrefix)).contents
+        if prefix.magic != 0x09042009 or not prefix.volume:
+            raise DriveError("Unsupported NTFS-3G security API layout.")
+        inode = self.lib.ntfs_inode_open(prefix.volume, 3)
+        if not inode:
+            raise DriveError("Cannot read the NTFS dirty flag: cannot open $Volume.")
+        try:
+            # ntfs_attr_open accepts NULL with name_len=0 for an unnamed attribute.
+            attr = self.lib.ntfs_attr_open(inode, 0x70, None, 0)
+            if not attr:
+                raise DriveError("Cannot read the NTFS dirty flag: missing volume information.")
+            try:
+                buffer = C.create_string_buffer(12)
+                if self.lib.ntfs_attr_pread(attr, 0, 12, buffer) != 12:
+                    raise DriveError("Cannot read the NTFS dirty flag: incomplete volume information.")
+                dirty = bool(int.from_bytes(buffer.raw[10:12], "little") & 1)
+            finally:
+                self.lib.ntfs_attr_close(attr)
+        finally:
+            closed = self.lib.ntfs_inode_close(inode)
+        if closed:
+            raise DriveError("Cannot close $Volume after reading the NTFS dirty flag.")
+        return dirty
 
     def get(self, path):
         # NTFS-3G clears required size on failure, so use a bounded maximum buffer.
