@@ -52,11 +52,10 @@
   <!-- Magic wand behind the stick; together they form an X -->
   <ellipse cx="520" cy="540" rx="70" ry="420" fill="url(#shadow)" transform="rotate(45 520 540)"/>
   <g transform="rotate(45 512 512)">
-    <rect x="464" y="170" width="96" height="740" rx="48" fill="url(#wand)"/>
-    <rect x="464" y="170" width="96" height="150" rx="48" fill="url(#cap)"/>
-    <rect x="464" y="270" width="96" height="50" fill="url(#cap)"/>
-    <rect x="464" y="800" width="96" height="110" rx="48" fill="url(#cap)"/>
-    <rect x="464" y="800" width="96" height="50" fill="url(#cap)"/>
+    <rect x="464" y="130" width="96" height="780" rx="14" fill="url(#wand)"/>
+    <!-- Short white tips; the top one sits mostly under the sparkle -->
+    <path d="M464 144 Q464 130 478 130 H546 Q560 130 560 144 V200 H464 Z" fill="url(#cap)"/>
+    <path d="M464 840 H560 V896 Q560 910 546 910 H478 Q464 910 464 896 Z" fill="url(#cap)"/>
   </g>
   <circle cx="770" cy="254" r="150" fill="url(#glow)"/>
   <path d="M770 150 Q791 233 874 254 Q791 275 770 358 Q749 275 666 254 Q749 233 770 150 Z" fill="url(#spark)"/>
@@ -76,7 +75,7 @@
     <rect x="344" y="300" width="336" height="630" rx="92" fill="url(#body)"/>
     <rect x="350" y="306" width="324" height="618" rx="86" fill="none" stroke="url(#rim)" stroke-width="10"/>
     <!-- USB trident, pointing toward the connector -->
-    <g transform="translate(512 622) scale(1.22) translate(-512 -620)" fill="url(#glyph)" stroke="url(#glyph)" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(512 615) scale(1.0) translate(-512 -615)" fill="url(#glyph)" stroke="url(#glyph)" stroke-linecap="round" stroke-linejoin="round">
       <path d="M512 772 V500" stroke-width="30" fill="none"/>
       <path d="M512 446 L556 512 H468 Z" stroke-width="14"/>
       <path d="M512 712 L436 650 V604" stroke-width="28" fill="none"/>
