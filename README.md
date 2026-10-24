@@ -80,6 +80,8 @@ Use `--library /absolute/path/to/libntfs-3g.dylib` (macOS) or `.so` (Linux) befo
 # or: .venv/bin/xbox-media-drive gui
 ```
 
+The window shows the version next to the title; the **About** button (on macOS also the app menu) shows the version, license and a link to the source code.
+
 1. Select the external NTFS partition, or open a raw NTFS volume image to add it to the list.
 2. Click **Unmount** (inspecting a mounted volume also offers to). Do not use Eject or the OS's eject button: that disconnects the drive. If you already ejected it, unplug and reconnect it, then click **Refresh drives**.
 3. Click **Inspect permissions** (read-only).

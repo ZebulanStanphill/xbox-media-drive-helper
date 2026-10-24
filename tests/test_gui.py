@@ -6,19 +6,19 @@ import unittest
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QPoint, QPointF, Qt
-    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtGui import QAction, QWheelEvent
     from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox, QStyle
-    from xbox_media_drive.gui import MainWindow, PRIVACY_SETTINGS, app_icon, configure, helper_command, parse_helper_output
+    from xbox_media_drive.gui import MainWindow, PRIVACY_SETTINGS, SOURCE_URL, app_icon, configure, helper_command, parse_helper_output
     HAS_QT = True
 except ImportError:
     HAS_QT = False
 
-from xbox_media_drive import DriveError
+from xbox_media_drive import DriveError, __version__
 from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
 from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
@@ -928,3 +928,31 @@ class GUITests(unittest.TestCase):
         self.assertEqual(dialog[0][0], "Boot sector restored")
         self.assertIn("Unplug and reconnect", dialog[0][1])
         self.assertIn("/tmp/sector.mbr", dialog[0][1])
+
+    def test_header_shows_version(self):
+        self.assertIn(__version__, self.window.header.text())
+
+    def test_about_box_shows_version_license_and_source(self):
+        box = self.window.about_box()
+        self.addCleanup(box.deleteLater)
+        self.assertIn(__version__, box.text())
+        self.assertIn("GNU General Public License", box.text())
+        self.assertIn(SOURCE_URL, box.text())
+        self.assertEqual(len(box.buttons()), 1)
+        self.assertEqual(box.standardButtons(), QMessageBox.Ok)
+        self.assertNotIn("THIRD_PARTY_NOTICES", box.text())
+
+    def test_packaged_about_box_names_bundled_components(self):
+        with patch("xbox_media_drive.gui.sys.frozen", True, create=True):
+            box = self.window.about_box()
+        self.addCleanup(box.deleteLater)
+        self.assertIn("NTFS-3G", box.text())
+        self.assertIn("THIRD_PARTY_NOTICES.md", box.text())
+
+    def test_about_action_opens_about_box(self):
+        self.assertEqual(self.window.about_action.menuRole(), QAction.AboutRole)
+        box = MagicMock()
+        with patch.object(self.window, "about_box", return_value=box):
+            self.window.about_action.trigger()
+            self.window.about_button.click()
+        self.assertEqual(box.exec.call_count, 2)

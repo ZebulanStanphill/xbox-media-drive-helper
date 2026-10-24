@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QAction, QGuiApplication, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                               QListWidgetItem, QMainWindow, QMessageBox,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QSizePolicy, QLayout, QProxyStyle, QStyle,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
-from . import DriveError
+from . import DriveError, __version__
 from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
@@ -53,6 +53,10 @@ QTabBar::tab:disabled { color: #4f5c53; border-bottom-color: #1f2922; }
 QLabel:disabled, QLabel#muted:disabled { color: #4f5c53; }
 QProgressBar { border: none; background: #23372a; border-radius: 3px; max-height: 5px; }
 QProgressBar::chunk { background: #98e5ad; border-radius: 3px; }
+QMenuBar { background: #101613; color: #e7eee8; }
+QMenuBar::item:selected { background: #233027; }
+QMenu { background: #151e18; color: #e7eee8; border: 1px solid #2c3b31; }
+QMenu::item:selected { background: #304336; }
 QToolTip { background: #273d2e; color: white; border: 1px solid #55705d; }
 """
 
@@ -92,8 +96,12 @@ def configure(app):
     app.setStyleSheet(STYLE)
     # Lets Wayland/X11 desktops associate the window with the .desktop launcher.
     app.setDesktopFileName("xbox-media-drive-helper")
+    app.setApplicationName("Xbox Media Drive Helper")
+    app.setApplicationVersion(__version__)
 
 
+SOURCE_URL = "https://github.com/ZebulanStanphill/xbox-media-drive-helper"
+LICENSE_URL = "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"
 PRIVACY_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 
 
@@ -251,13 +259,27 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         header = QLabel(
             '<span style="font-size: 29px; font-weight: 700;">Xbox Media Drive Helper</span>'
+            '&nbsp;<span style="font-size: 15px; color: #a4b1a8;">{}</span>'
             '&nbsp;&nbsp;&nbsp;'
             '<span style="font-size: 13px; color: #a4b1a8;">'
-            'Prepare NTFS storage for Xbox apps, with a way back.</span>'
+            'Prepare NTFS storage for Xbox apps, with a way back.</span>'.format(__version__)
         )
         header.setTextFormat(Qt.RichText)
         header.setWordWrap(False)
-        layout.addWidget(header)
+        self.header = header
+        header_row = QHBoxLayout()
+        header_row.addWidget(header)
+        header_row.addStretch(1)
+        self.about_button = QPushButton("About")
+        self.about_button.setAccessibleName("About Xbox Media Drive Helper")
+        self.about_button.clicked.connect(self.show_about)
+        header_row.addWidget(self.about_button)
+        layout.addLayout(header_row)
+        # Qt moves this item into the macOS application menu.
+        self.about_action = QAction("About Xbox Media Drive Helper", self)
+        self.about_action.setMenuRole(QAction.AboutRole)
+        self.about_action.triggered.connect(self.show_about)
+        self.menuBar().addMenu("Help").addAction(self.about_action)
 
         intro = QFrame()
         intro.setObjectName("panel")
@@ -911,6 +933,35 @@ class MainWindow(QMainWindow):
                                 "Finished restoring {}: {} objects restored, {} were already original.\n\n"
                                 "Files not recorded in the journal keep their current permissions.".format(
                                     self.target_path, result["restored"], result["already_original"]))
+
+    def about_box(self):
+        title = "About Xbox Media Drive Helper"
+        # macOS hides dialog titles, so the bold headline is the app name.
+        box = QMessageBox(QMessageBox.NoIcon, title, "", QMessageBox.Ok, self)
+        box.setIconPixmap(app_icon().pixmap(64, 64))
+        box.setTextFormat(Qt.RichText)
+        link = '<a href="{0}"><span style="color: #98e5ad;">{1}</span></a>'
+        # Only the packaged macOS app bundles these; source installs use the system's copies.
+        bundled = ("<p>The app also bundles Python, Qt and PySide6 (LGPL) and NTFS-3G (GPL-2.0-or-later); "
+                   "THIRD_PARTY_NOTICES.md on the disk image lists their licenses and sources.</p>"
+                   if getattr(sys, "frozen", False) else "")
+        box.setText(
+            "<p style='font-size: 16px;'><b>Xbox Media Drive Helper</b></p>"
+            "<p>Version {}</p>"
+            "<p>Prepares NTFS drives for Xbox apps, with a way back.</p>"
+            "<p>Licensed under the {}, version 2 or (at your option) any later version, with no warranty.</p>"
+            "{}"
+            "<p>Source code: {}</p>".format(
+                __version__, link.format(LICENSE_URL, "GNU General Public License"), bundled,
+                link.format(SOURCE_URL, SOURCE_URL)))
+        text = box.findChild(QLabel, "qt_msgbox_label")
+        if text is not None:
+            text.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            text.setOpenExternalLinks(True)
+        return box
+
+    def show_about(self):
+        self.about_box().exec()
 
     def report(self, icon, title, message, settings=False, details=None):
         """Show a result once the worker has finished, so the window is no longer busy behind the dialog."""
