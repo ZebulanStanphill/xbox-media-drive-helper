@@ -267,9 +267,25 @@ class GUITests(unittest.TestCase):
         self.window.action = "clear-dirty"
         self.window.completed({"target": "/tmp/volume.img", "dirty": False, "cleared": True})
         self.assertTrue(self.window.clear_dirty_button.isHidden())
+        shown = []
+        with patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))):
+            self.window.followups.pop(0)()
+        self.assertEqual(shown[0][0], "Dirty flag cleared")
+        self.assertIn("/tmp/volume.img is cleared", shown[0][1])
         with patch("xbox_media_drive.gui.is_mounted", return_value=False), patch.object(self.window, "start") as start:
             self.window.followups.pop(0)()
         start.assert_called_once_with("inspect", ["inspect", "/tmp/volume.img", "--access", "modify"])
+
+    def test_clear_dirty_when_already_clear_says_nothing_changed(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "clear-dirty"
+        self.window.completed({"target": "/tmp/volume.img", "dirty": False, "cleared": False})
+        shown = []
+        with patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))):
+            self.window.followups.pop(0)()
+        self.assertEqual(shown[0][0], "Dirty flag already clear")
+        self.assertIn("nothing changed", shown[0][1])
+        self.assertEqual(len(self.window.followups), 1)
 
     def test_clear_dirty_button_disabled_while_worker_runs(self):
         self.window.set_target("/tmp/volume.img")

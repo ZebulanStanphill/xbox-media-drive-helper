@@ -876,6 +876,15 @@ class MainWindow(QMainWindow):
             self.filesystem_check = None
             self.invalidate()
             self.log("NTFS dirty flag cleared." if result["cleared"] else "NTFS dirty flag was already clear.")
+            if result["cleared"]:
+                self.report(QMessageBox.Information, "Dirty flag cleared",
+                            "The NTFS dirty flag on {} is cleared, and reading it back from the drive confirmed it. "
+                            "Linux will no longer refuse to mount the drive because of this flag. Nothing else on the drive changed.\n\n"
+                            "Click OK to inspect the drive again.".format(self.target_path))
+            else:
+                self.report(QMessageBox.Information, "Dirty flag already clear",
+                            "The NTFS dirty flag on {} was already clear, so nothing changed.\n\n"
+                            "Click OK to inspect the drive again.".format(self.target_path))
             self.followups.append(self.inspect_volume)
         elif self.action == "check-mode":
             self.disk_layout = result
