@@ -71,6 +71,16 @@ class CLITests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(json.loads(output)["ntfsck"], found)
 
+    def test_doctor_reports_whether_ntfsck_is_the_bundled_copy(self):
+        for bundled in (True, False):
+            with self.subTest(bundled=bundled), patch("xbox_media_drive.cli.load_library"), \
+                    patch("xbox_media_drive.cli.find_ntfsck", return_value="/mnt/ntfsck"), \
+                    patch("xbox_media_drive.cli.is_bundled", return_value=bundled) as check:
+                status, output, _ = self.call(["--json", "doctor"])
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(output)["ntfsck_bundled"], bundled)
+            check.assert_called_once_with("/mnt/ntfsck")
+
     def test_dirty_warning_and_json_for_each_operation(self):
         for command in ("inspect", "prepare", "restore"):
             for dirty in (False, True):

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +25,12 @@ NATIVE = ROOT / "build/linux-native"
 # The app version is defined only in the package; the file names follow it.
 APP_VERSION = re.search(r'^__version__ = "([^"]+)"$', (ROOT / "xbox_media_drive/__init__.py").read_text(),
                         re.MULTILINE).group(1)
+NTFSPROGS_VERSION = "1.0.0"
+NTFSPROGS_URL = "https://github.com/ntfsprogs-plus/ntfsprogs-plus/archive/refs/tags/{}.tar.gz".format(NTFSPROGS_VERSION)
+NTFSPROGS_SHA256 = "3e3d9d2f3620cdebb128fb8dbc116f2c2a035f18000e3f01af204694ef8c7778"
+# The only shared libraries the bundled ntfsck may need: all come with glibc on every Linux system.
+ALLOWED_LIBRARIES = re.compile(r"libc\.so\.6|ld-linux[\w.-]*\.so\.\d+|linux-vdso\.so\.1|libm\.so\.6"
+                               r"|libpthread\.so\.0|libdl\.so\.2|librt\.so\.1")
 APPIMAGETOOL_VERSION = "1.9.1"
 RUNTIME_VERSION = "20251108"
 # Release assets by architecture: (file name, SHA-256).
@@ -125,6 +132,65 @@ def licenses(python):
     return output
 
 
+def extract(archive, destination):
+    """Extract a pinned source archive, rejecting links and paths that escape the folder."""
+    destination = destination.resolve()
+    with tarfile.open(archive) as package:
+        for member in package.getmembers():
+            path = (destination / member.name).resolve()
+            if destination not in path.parents or member.issym() or member.islnk():
+                raise RuntimeError("Unsafe path in source archive: " + member.name)
+        if sys.version_info >= (3, 12):
+            package.extractall(destination, filter="data")
+        else:
+            package.extractall(destination)
+
+
+def check_dependencies(program):
+    """Fail if the program needs any shared library beyond the C library."""
+    result = subprocess.run(["ldd", str(program)], capture_output=True, text=True)
+    print(result.stdout + result.stderr, flush=True)
+    if result.returncode != 0:
+        # Fully static programs make ldd fail with "not a dynamic executable"; anything else is an error.
+        if "not a dynamic executable" in result.stdout + result.stderr:
+            return
+        raise RuntimeError("ldd failed for " + str(program))
+    unexpected = [line.strip() for line in result.stdout.splitlines()
+                  if line.strip() and not ALLOWED_LIBRARIES.fullmatch(os.path.basename(line.split()[0]))]
+    if unexpected:
+        raise RuntimeError("{} needs more than the C library: {}".format(program.name, "; ".join(unexpected)))
+
+
+def build_ntfsck(archive):
+    """Build ntfsck from ntfsprogs-plus with libntfs linked in, and return the installed program."""
+    prefix = ROOT / "build/linux-ntfsck"
+    if prefix.exists():
+        shutil.rmtree(prefix)
+    with tempfile.TemporaryDirectory(prefix="xmd-ntfsck-") as temp:
+        extract(archive, Path(temp))
+        source = Path(temp).resolve() / ("ntfsprogs-plus-" + NTFSPROGS_VERSION)
+        (source / "m4").mkdir(exist_ok=True)
+        run(["./autogen.sh"], cwd=source)
+        # --disable-library links libntfs into the tools instead of installing it as a shared library.
+        # ntfsprogs-plus has no --disable-crypto option; its configure treats enable_crypto=no from the
+        # environment as that choice, so a libgcrypt on the build machine can't leak into the program.
+        run(["./configure", "--prefix=" + str(prefix), "--without-uuid", "--disable-library", "--disable-ldconfig"],
+            cwd=source, env=dict(os.environ, enable_crypto="no"))
+        run(["make", "-j" + str(min(os.cpu_count() or 2, 8))], cwd=source)
+        run(["make", "install"], cwd=source)
+        licenses = ROOT / "build/linux-tools/licenses/ntfsprogs-plus"
+        licenses.mkdir(parents=True, exist_ok=True)
+        for name in ("COPYING", "COPYING.LIB"):
+            shutil.copyfile(source / name, licenses / name)
+    program = next((path for path in (prefix / "sbin/ntfsck", prefix / "bin/ntfsck") if path.is_file()), None)
+    if program is None:
+        raise RuntimeError("ntfsck was not installed")
+    if program.read_bytes()[:4] != b"\x7fELF":
+        raise RuntimeError("ntfsck is not a plain executable (libtool wrapper?)")
+    check_dependencies(program)
+    return program
+
+
 def bundled_library():
     """The real libntfs-3g.so.N file, copied under its SONAME so symlinks are not needed in the bundle."""
     library = NATIVE / "lib"
@@ -169,6 +235,9 @@ def main():
     TOOLS.mkdir(parents=True, exist_ok=True)
     python = bootstrap()
     licenses(python)
+    ntfsprogs_source = TOOLS / ("ntfsprogs-plus-" + NTFSPROGS_VERSION + ".tar.gz")
+    download(NTFSPROGS_URL, ntfsprogs_source, NTFSPROGS_SHA256)
+    ntfsck = build_ntfsck(ntfsprogs_source)
 
     native = native_script()
     ntfs_source = TOOLS / ("ntfs-3g_ntfsprogs-" + native.VERSION + ".tgz")
@@ -195,7 +264,7 @@ def main():
         shutil.rmtree(frozen)
     run([python, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", frozen,
          "--workpath", ROOT / "build/pyinstaller/linux", ROOT / "packaging/linux/XboxMediaDrive.spec"],
-        env=dict(os.environ, XMD_LINUX_NATIVE=str(library)))
+        env=dict(os.environ, XMD_LINUX_NATIVE=str(library), XMD_LINUX_NTFSCK=str(ntfsck)))
 
     appdir = ROOT / "build/linux-appdir"
     if appdir.exists():
@@ -224,7 +293,7 @@ def main():
     image.chmod(0o755)
 
     sources = dist / "Xbox-Media-Drive-Helper-{}-source.tar.gz".format(APP_VERSION)
-    source_archive(sources, ntfs_source)
+    source_archive(sources, ntfs_source, ntfsprogs_source)
     checksums = [hashlib.sha256(file.read_bytes()).hexdigest() + "  " + file.name for file in (image, sources)]
     (dist / "SHA256SUMS.txt").write_text("\n".join(checksums) + "\n")
     print("AppImage and archives: " + str(dist))

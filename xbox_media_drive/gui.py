@@ -872,8 +872,10 @@ class MainWindow(QMainWindow):
             clean = result["verdict"] == "clean"
             self.filesystem_check = {"target": self.target_path, "identity": (self.inspection or {}).get("identity"),
                                      "clean": clean, "time": datetime.now().strftime("%H:%M")}
-            message = ("ntfsck found no problems." if clean else
-                       "ntfsck found problems. Repair the drive in Windows with chkdsk X: /f; don't just clear its dirty flag.")
+            checker = "The bundled ntfsck" if result.get("bundled") else "ntfsck"
+            message = (checker + " found no problems." if clean else
+                       checker + " found problems. Repair the drive in Windows with chkdsk X: /f; "
+                       "don't just clear its dirty flag.")
             self.log(message)
             if not self.inspection:
                 self.status.setText(message + " Inspect this volume before preparing it.")

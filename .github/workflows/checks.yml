@@ -45,7 +45,19 @@ jobs:
       - name: Smoke test (mounted, as root, like the pkexec helper)
         run: |
           image=$(ls "$PWD"/dist/linux/*.AppImage)
-          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json doctor
+          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json doctor | tee doctor.json
+          # The runner has no ntfsck of its own, so this must be the copy inside the AppImage.
+          ! command -v ntfsck
+          python -c "import json; d = json.load(open('doctor.json')); assert d['ntfsck_bundled'] and d['ntfsck'].endswith('/ntfsprogs-plus/ntfsck'), d"
+      - name: Check a fresh NTFS image with the bundled ntfsck (as root)
+        run: |
+          image=$(ls "$PWD"/dist/linux/*.AppImage)
+          truncate -s 64M fresh.img
+          build/linux-native/sbin/mkntfs -F -Q -L "Xbox Test" fresh.img
+          sha256sum fresh.img > fresh.sha256
+          sudo "$image" --cli --json check "$PWD/fresh.img" | tee check.json
+          python -c "import json; r = json.load(open('check.json')); assert r['verdict'] == 'clean' and r['bundled'] is True, r"
+          sha256sum -c fresh.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage

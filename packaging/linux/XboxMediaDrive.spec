@@ -4,6 +4,7 @@ from pathlib import Path
 
 root = Path(SPECPATH).resolve().parent.parent
 native = Path(os.environ["XMD_LINUX_NATIVE"])
+ntfsck = Path(os.environ["XMD_LINUX_NTFSCK"])
 tools = root / "build/linux-tools"
 
 analysis = Analysis(
@@ -13,7 +14,9 @@ analysis = Analysis(
     datas=[(str(root / "xbox_media_drive/icon.svg"), "xbox_media_drive"),
            (str(root / "LICENSE"), "licenses"),
            (str(root / "packaging/linux/THIRD_PARTY_NOTICES.md"), "licenses"),
-           (str(tools / "licenses"), "licenses/third-party")],
+           (str(tools / "licenses"), "licenses/third-party"),
+           # A plain data file: the app looks for it at ntfsprogs-plus/ntfsck, read-only inside the AppImage.
+           (str(ntfsck), "ntfsprogs-plus")],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],

@@ -1,6 +1,7 @@
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.fsck import SYSTEM_DIRECTORIES, check_filesystem, find_ntfsck
+from xbox_media_drive.fsck import SYSTEM_DIRECTORIES, bundled_ntfsck, check_filesystem, find_ntfsck, is_bundled
 
 
 class FindTests(unittest.TestCase):
@@ -124,6 +125,110 @@ class FindTests(unittest.TestCase):
                 self.assertIsNone(self.find())
 
 
+class BundledTests(unittest.TestCase):
+    """The ntfsck inside an AppImage: only on a read-only mount, and only after a system copy."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.owner = os.getuid()
+        self.system = Path(self.temp.name) / "sbin"
+        self.system.mkdir()
+        self.bundled = Path(self.temp.name) / "ntfsck"
+        self.bundled.write_bytes(b"#!/bin/sh\n")
+        self.bundled.chmod(0o755)
+        for patcher in (patch("sys.platform", "linux"), patch.object(sys, "frozen", True, create=True),
+                        patch.dict(os.environ, {"APPIMAGE": "/home/me/Xbox.AppImage"})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def statvfs(self, read_only=True):
+        return lambda path: SimpleNamespace(f_flag=os.ST_RDONLY if read_only else 0)
+
+    def find(self, read_only=True, bundled=None):
+        return find_ntfsck((str(self.system),), self.owner, bundled=str(bundled or self.bundled),
+                           statvfs=self.statvfs(read_only))
+
+    def test_is_used_when_no_system_copy_exists(self):
+        self.assertEqual(self.find(), os.path.realpath(self.bundled))
+
+    def test_system_copy_is_preferred(self):
+        program = self.system / "ntfsck"
+        program.write_bytes(b"#!/bin/sh\n")
+        program.chmod(0o755)
+        self.assertEqual(self.find(), os.path.realpath(program))
+        self.assertFalse(is_bundled(self.find(), str(self.bundled), self.statvfs()))
+
+    def test_unsafe_system_copy_does_not_block_the_bundled_one(self):
+        program = self.system / "ntfsck"
+        program.write_bytes(b"#!/bin/sh\n")
+        program.chmod(0o777)
+        self.assertEqual(self.find(), os.path.realpath(self.bundled))
+
+    def test_is_reported_as_bundled(self):
+        real = os.path.realpath(self.bundled)
+        self.assertTrue(is_bundled(real, str(self.bundled), self.statvfs()))
+        self.assertFalse(is_bundled(real, str(self.bundled), self.statvfs(read_only=False)))
+        self.assertFalse(is_bundled("/usr/sbin/ntfsck", str(self.bundled), self.statvfs()))
+        self.assertFalse(is_bundled(None, str(self.bundled), self.statvfs()))
+
+    def test_ownership_is_not_required(self):
+        with patch("xbox_media_drive.fsck.os.stat", side_effect=lambda path: SimpleNamespace(
+                st_uid=self.owner + 1, st_mode=stat.S_IFREG | 0o755)):
+            self.assertEqual(bundled_ntfsck(str(self.bundled), self.statvfs()), os.path.realpath(self.bundled))
+
+    def test_rejected_on_a_writable_filesystem(self):
+        self.assertIsNone(self.find(read_only=False))
+
+    def test_rejected_when_group_or_world_writable(self):
+        for mode in (0o775, 0o757, 0o777, 0o722):
+            with self.subTest(mode=oct(mode)):
+                self.bundled.chmod(mode)
+                self.assertIsNone(self.find())
+
+    def test_rejected_when_not_an_executable_regular_file(self):
+        self.bundled.chmod(0o644)
+        self.assertIsNone(self.find())
+        self.bundled.unlink()
+        self.assertIsNone(self.find())
+        self.bundled.mkdir()
+        self.assertIsNone(self.find())
+
+    def test_rejected_when_not_frozen(self):
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertIsNone(self.find())
+
+    def test_rejected_when_not_run_from_an_appimage(self):
+        for value in (None, ""):
+            with self.subTest(value=value):
+                environment = dict(os.environ)
+                environment.pop("APPIMAGE")
+                if value is not None:
+                    environment["APPIMAGE"] = value
+                with patch.dict(os.environ, environment, clear=True):
+                    self.assertIsNone(self.find())
+
+    def test_rejected_when_not_linux(self):
+        for platform in ("darwin", "win32", "freebsd14"):
+            with self.subTest(platform=platform), patch("sys.platform", platform):
+                self.assertIsNone(self.find())
+                self.assertIsNone(bundled_ntfsck(str(self.bundled), self.statvfs()))
+
+    def test_default_location_is_inside_the_bundle_directory(self):
+        folder = Path(self.temp.name) / "bundle"
+        (folder / "ntfsprogs-plus").mkdir(parents=True)
+        program = folder / "ntfsprogs-plus/ntfsck"
+        program.write_bytes(b"#!/bin/sh\n")
+        program.chmod(0o755)
+        with patch.object(sys, "_MEIPASS", str(folder), create=True):
+            self.assertEqual(bundled_ntfsck(statvfs=self.statvfs()), os.path.realpath(program))
+            self.assertIsNone(bundled_ntfsck(statvfs=self.statvfs(read_only=False)))
+
+    def test_missing_bundle_directory_is_not_an_error(self):
+        with patch.object(sys, "_MEIPASS", self.temp.name + "/nowhere", create=True):
+            self.assertIsNone(bundled_ntfsck(statvfs=self.statvfs()))
+
+
 class CheckTests(unittest.TestCase):
     CHECKER = "/usr/sbin/ntfsck"
 
@@ -169,8 +274,12 @@ class CheckTests(unittest.TestCase):
         for code, verdict in ((0, "clean"), (4, "problems")):
             with self.subTest(code=code):
                 result, _ = self.check(code, "some output\n")
-                self.assertEqual(result, {"target": "/dev/sdb1", "checker": self.CHECKER, "exit_code": code,
-                                          "verdict": verdict, "output": "some output"})
+                self.assertEqual(result, {"target": "/dev/sdb1", "checker": self.CHECKER, "bundled": False,
+                                          "exit_code": code, "verdict": verdict, "output": "some output"})
+
+    def test_result_says_when_the_bundled_ntfsck_ran(self):
+        with patch("xbox_media_drive.fsck.is_bundled", return_value=True):
+            self.assertTrue(self.check()[0]["bundled"])
 
     def test_any_other_exit_is_an_error_with_the_output_tail(self):
         for code in (1, 2, 8, 16, 32, 64, 128, -9):

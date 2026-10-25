@@ -359,6 +359,16 @@ class GUITests(unittest.TestCase):
         self.assertEqual([title for title, text in dialog], ["No problems found"])
         self.assertEqual(self.window.filesystem_check["clean"], True)
 
+    def test_bundled_ntfsck_is_named_in_the_check_result(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "check"
+        with self.dialogs() as dialog:
+            self.window.completed({"verdict": "clean", "exit_code": 0, "output": "", "target": "/tmp/volume.img",
+                                   "bundled": True})
+            self.assertIn("The bundled ntfsck found no problems.", self.window.activity.toPlainText())
+            self.window.followups.pop(0)()
+        self.assertEqual(dialog, [("No problems found", "The bundled ntfsck found no problems.")])
+
     def test_filesystem_check_results_are_logged_and_shown(self):
         self.window.set_target("/tmp/volume.img")
         self.window.action = "check"

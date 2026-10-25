@@ -16,6 +16,13 @@ build scripts accompany these builds. It is unaffiliated with Microsoft or Xbox.
 - NTFS-3G 2026.9.28: GPL-2.0-or-later. Its unmodified source archive is included
   in the corresponding-source archive. Source/checksums:
   https://github.com/tuxera/ntfs-3g/releases/tag/2026.9.28
+- ntfsck from ntfsprogs-plus 1.0.0: GPL-2.0 (some of its
+  files GPL-2.0-or-later), with its libntfs, derived from NTFS-3G's library,
+  linked in. It is a separate program that the app runs only when no ntfsck is
+  installed on the system. Its COPYING and COPYING.LIB license texts accompany
+  this build. Its unmodified source archive is
+  included in the corresponding-source archive. Source:
+  https://github.com/ntfsprogs-plus/ntfsprogs-plus/tree/1.0.0
 - PyInstaller 6.22.3: GPL-2.0-or-later with the bootloader exception that permits
   distribution of frozen applications. Its license text accompanies this build.
   Source/license: https://github.com/pyinstaller/pyinstaller/tree/v6.22.3

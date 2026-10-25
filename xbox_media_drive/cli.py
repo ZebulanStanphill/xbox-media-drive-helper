@@ -6,7 +6,7 @@ import sys
 
 from . import DriveError, __version__
 from .devices import discover, whole_disk, validate_whole_disk
-from .fsck import CHECK_PROBLEMS_NOTE, check_filesystem, find_ntfsck
+from .fsck import CHECK_PROBLEMS_NOTE, check_filesystem, find_ntfsck, is_bundled
 from .layout import analyze, read_head, restore_sector, switch
 from .native import load_library
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, clear_dirty, inspect, journal_info, prepare, restore
@@ -65,9 +65,10 @@ def main(argv=None):
         if args.command == "list":
             result = {"devices": [device.to_dict() for device in discover()]}
         elif args.command == "doctor":
+            ntfsck = find_ntfsck()
             result = {"version": __version__, "platform": sys.platform,
                       "library": str(load_library(args.library)._name), "root": os.getuid() == 0,
-                      "ntfsck": find_ntfsck()}
+                      "ntfsck": ntfsck, "ntfsck_bundled": is_bundled(ntfsck)}
         elif args.command == "journal":
             result = journal_info(args.backup)
         elif args.command == "mode":
