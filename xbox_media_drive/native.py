@@ -60,7 +60,8 @@ def load_library(explicit=None):
         # Bundle dependencies take precedence and never fall back to a host
         # Homebrew installation or a development checkout.
         directory = Path(sys._MEIPASS)
-        candidates = sorted(glob.glob(str(directory / "libntfs-3g*.dylib")))
+        pattern = "libntfs-3g*.dylib" if sys.platform == "darwin" else "libntfs-3g.so*"
+        candidates = sorted(glob.glob(str(directory / pattern)))
     else:
         candidates = [ctypes.util.find_library("ntfs-3g")]
     if not explicit and not frozen:

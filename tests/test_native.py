@@ -2,11 +2,35 @@
 import ctypes as C
 import errno
 import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.native import NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, SecurityAPIPrefix, Volume
+from xbox_media_drive.native import NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, SecurityAPIPrefix, Volume, load_library
+
+
+class FrozenLibraryTests(unittest.TestCase):
+    def attempted(self, platform, names):
+        with tempfile.TemporaryDirectory() as folder:
+            for name in names:
+                (Path(folder) / name).write_bytes(b"")
+            with patch.object(sys, "frozen", True, create=True), patch.object(sys, "_MEIPASS", folder, create=True), \
+                    patch("sys.platform", platform), \
+                    patch("xbox_media_drive.native.C.CDLL", side_effect=OSError("not a library")) as cdll:
+                with self.assertRaisesRegex(DriveError, "not found"):
+                    load_library()
+        return [Path(call.args[0]).name for call in cdll.call_args_list]
+
+    def test_linux_bundle_loads_the_shared_object_only(self):
+        self.assertEqual(self.attempted("linux", ["libntfs-3g.so.89", "libntfs-3g.91.dylib", "libother.so"]),
+                         ["libntfs-3g.so.89"])
+
+    def test_macos_bundle_loads_the_dylib_only(self):
+        self.assertEqual(self.attempted("darwin", ["libntfs-3g.so.89", "libntfs-3g.91.dylib"]),
+                         ["libntfs-3g.91.dylib"])
 
 
 class VolumeOpenTests(unittest.TestCase):

@@ -143,6 +143,15 @@ def helper_command(arguments, elevate):
         literal = '"' + shell.replace("\\", "\\\\").replace('"', '\\"') + '"'
         return ["osascript", "-e", "do shell script " + literal + " with administrator privileges"]
     if sys.platform.startswith("linux") and shutil.which("pkexec"):
+        appimage = os.environ.get("APPIMAGE") if getattr(sys, "frozen", False) else None
+        if appimage:
+            # Inside an AppImage, sys.executable lives in the user's FUSE mount (/tmp/.mount_*), which root
+            # cannot read. Root running the .AppImage file itself mounts its own copy instead. The runtime sets
+            # APPIMAGE to that file's absolute path.
+            if not os.path.isabs(appimage) or not os.path.isfile(appimage):
+                raise DriveError("Cannot authorize disk access: the AppImage file {!r} was not found. "
+                                 "Run the app from its .AppImage file.".format(appimage))
+            return ["pkexec", appimage, "--cli", "--json"] + arguments
         return ["pkexec"] + command
     raise DriveError("Install policykit's pkexec to authorize disk access, or use the CLI with sudo.")
 

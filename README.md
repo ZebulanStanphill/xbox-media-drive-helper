@@ -40,6 +40,21 @@ Disk operations also need **Full Disk Access** (System Settings → Privacy & Se
 
 The bundle minimum OS and every bundled Mach-O deployment target are checked against 15.8. Runtime checks are performed on the available build Mac; this is not a claim of testing on macOS 15.8 itself. Verification reports for the universal build accompany it.
 
+### Linux AppImage
+
+A self-contained build for Linux, `Xbox-Media-Drive-Helper-<version>-<arch>.AppImage`, bundles Python, Qt and NTFS-3G, so nothing else needs installing besides FUSE. It is built on Ubuntu 22.04 and runs on distributions with a glibc at least that new. For now, download it from the `linux-appimage` artifact of the latest successful **Checks** run on GitHub, or build it yourself on Linux with `python3 scripts/build-linux.py` (needs a C compiler, `make`, `pkg-config` and `curl`; the result is in `dist/linux/`, with a source archive and `SHA256SUMS.txt`).
+
+```sh
+chmod +x Xbox-Media-Drive-Helper-*.AppImage
+./Xbox-Media-Drive-Helper-*.AppImage
+```
+
+- **FUSE.** AppImages mount themselves with FUSE, which most desktop distributions already include. Where it is missing, install `libfuse2` (Debian and Ubuntu 22.04) or `fuse3`, or run with `--appimage-extract-and-run` to skip FUSE. The CLI is included: `./Xbox-Media-Drive-Helper-*.AppImage --cli doctor`.
+- **Authorization.** Disk operations go through `pkexec`, so a PolicyKit authentication agent must be running (any desktop session has one), and it asks for authorization on each operation.
+- **Trust.** Authorizing it lets that `.AppImage` file run as root: the app starts the file itself, not a copy inside the user-owned FUSE mount, which root cannot read. Keep the file somewhere only you control, such as a directory in your home folder that other users and programs cannot write to. This is the same trust as running a source install with `sudo`.
+
+`packaging/linux/install.sh` is for source installs; an AppImage needs no installation.
+
 ### From source / Linux
 
 Requirements: Python 3.9+, Linux or macOS, and NTFS-3G's shared library. The GUI uses PySide6. Disk access is offline through the library; **FUSE, macFUSE and a mounted NTFS write driver are not required**.

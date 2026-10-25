@@ -1,10 +1,12 @@
 import json
 import os
 import shlex
+import sys
 import tempfile
 import unittest
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -522,6 +524,47 @@ class GUITests(unittest.TestCase):
         with patch.object(__import__("sys"), "frozen", True, create=True):
             command = helper_command(["inspect", "/dev/test"], elevate=False)
         self.assertEqual(command[1:], ["--cli", "--json", "inspect", "/dev/test"])
+
+    def appimage_command(self, appimage, pkexec="/usr/bin/pkexec", uid=1000, frozen=True):
+        environment = {} if appimage is None else {"APPIMAGE": appimage}
+        with patch.object(__import__("sys"), "frozen", frozen, create=True), \
+                patch.dict(os.environ, environment), patch("sys.platform", "linux"), \
+                patch("xbox_media_drive.gui.shutil.which", return_value=pkexec), \
+                patch("xbox_media_drive.gui.os.getuid", return_value=uid):
+            if appimage is None:
+                os.environ.pop("APPIMAGE", None)
+            return helper_command(["inspect", "/dev/test"], elevate=True)
+
+    def test_appimage_helper_runs_the_appimage_file_as_root(self):
+        # The running copy lives in the user's FUSE mount, which root can't read.
+        with tempfile.TemporaryDirectory() as folder:
+            appimage = os.path.join(folder, "Xbox.AppImage")
+            Path(appimage).write_bytes(b"")
+            command = self.appimage_command(appimage)
+        self.assertEqual(command, ["pkexec", appimage, "--cli", "--json", "inspect", "/dev/test"])
+
+    def test_appimage_helper_requires_an_absolute_existing_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for value in ("relative.AppImage", os.path.join(folder, "missing.AppImage"), folder):
+                with self.subTest(value=value), self.assertRaisesRegex(DriveError, "AppImage file"):
+                    self.appimage_command(value)
+
+    def test_appimage_variable_changes_nothing_unless_frozen_elevated_and_not_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            appimage = os.path.join(folder, "Xbox.AppImage")
+            Path(appimage).write_bytes(b"")
+            self.assertEqual(self.appimage_command(appimage, frozen=False)[0:2], ["pkexec", sys.executable])
+            self.assertEqual(self.appimage_command(None)[0:2], ["pkexec", sys.executable])
+            self.assertEqual(self.appimage_command(appimage, uid=0), [sys.executable, "--cli", "--json", "inspect", "/dev/test"])
+            with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, {"APPIMAGE": appimage}):
+                self.assertEqual(helper_command(["x"], elevate=False), [sys.executable, "--cli", "--json", "x"])
+
+    def test_appimage_without_pkexec_still_asks_for_polkit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            appimage = os.path.join(folder, "Xbox.AppImage")
+            Path(appimage).write_bytes(b"")
+            with self.assertRaisesRegex(DriveError, "pkexec"):
+                self.appimage_command(appimage, pkexec=None)
 
     @contextmanager
     def dialogs(self, on_show=None):

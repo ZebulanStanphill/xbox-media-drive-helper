@@ -1,0 +1,5 @@
+# Same versions as the macOS build; these have manylinux_2_28 wheels for x86_64 and aarch64.
+PyInstaller==6.22.3
+PySide6-Essentials==6.9.3
+shiboken6==6.9.3
+setuptools==82.0.1

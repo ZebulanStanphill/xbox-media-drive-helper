@@ -9,7 +9,7 @@ identity = os.environ.get("XMD_CODESIGN_IDENTITY") or None
 version = os.environ["XMD_VERSION"]
 
 analysis = Analysis(
-    [str(root / "packaging/macos/launcher.py")],
+    [str(root / "packaging/launcher.py")],
     pathex=[str(root)],
     binaries=[(str(native), ".")],
     datas=[(str(root / "xbox_media_drive/icon.svg"), "xbox_media_drive"),
