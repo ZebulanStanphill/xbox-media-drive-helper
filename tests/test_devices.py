@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import subprocess
 from unittest.mock import mock_open, patch
 
-from xbox_media_drive import DriveError
+from xbox_media_drive import DriveError, devices
 from xbox_media_drive.devices import mac_full_disk_access, discover, identity, is_mounted, linux_nodes, unmount, validate_target
 from tests.test_operations import make_boot
 
@@ -311,3 +311,28 @@ class WholeDiskTests(unittest.TestCase):
                 patch("xbox_media_drive.devices.os.stat", return_value=SimpleNamespace(st_rdev=os.makedev(8, 240))), \
                 patch.object(Path, "read_text", return_value=""):
             self.assertFalse(is_disk_mounted("/dev/sdz"))
+
+
+class SystemEnvironmentTests(unittest.TestCase):
+    def environment(self, environ, frozen=True, platform="linux"):
+        with patch.object(devices.sys, "frozen", frozen, create=True), patch.object(devices.sys, "platform", platform):
+            return devices.system_environment(environ)
+
+    def test_frozen_linux_restores_the_original_library_path(self):
+        env = self.environment({"LD_LIBRARY_PATH": "/tmp/.mount_x/_internal", "LD_LIBRARY_PATH_ORIG": "/opt/lib",
+                                "HOME": "/home/u"})
+        self.assertEqual(env, {"LD_LIBRARY_PATH": "/opt/lib", "HOME": "/home/u"})
+
+    def test_frozen_linux_drops_the_bundle_path_when_there_was_none(self):
+        self.assertEqual(self.environment({"LD_LIBRARY_PATH": "/tmp/.mount_x/_internal"}), {})
+
+    def test_other_builds_are_unchanged(self):
+        environ = {"LD_LIBRARY_PATH": "/opt/lib", "LD_LIBRARY_PATH_ORIG": "/x"}
+        self.assertEqual(self.environment(environ, frozen=False), environ)
+        self.assertEqual(self.environment(environ, platform="darwin"), environ)
+
+    def test_run_passes_the_system_environment(self):
+        with patch.object(devices, "system_environment", return_value={"A": "1"}), \
+                patch.object(devices.subprocess, "run", return_value=SimpleNamespace(stdout=b"ok")) as run:
+            self.assertEqual(devices.run(["lsblk"]), b"ok")
+        self.assertEqual(run.call_args.kwargs["env"], {"A": "1"})

@@ -31,9 +31,26 @@ def mac_full_disk_access():
         return False if exc.errno == errno.EPERM else None
 
 
+def system_environment(environ=None):
+    """The environment for system programs such as lsblk, udisksctl and pkexec.
+
+    A frozen Linux build points LD_LIBRARY_PATH at its bundled libraries, which are older than a current
+    distribution's (the AppImage is built on Ubuntu 22.04). System programs must load their own, so restore
+    the caller's original value, which PyInstaller keeps in LD_LIBRARY_PATH_ORIG.
+    """
+    env = dict(os.environ if environ is None else environ)
+    if getattr(sys, "frozen", False) and sys.platform.startswith("linux"):
+        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original:
+            env["LD_LIBRARY_PATH"] = original
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def run(args):
     try:
-        result = subprocess.run(args, capture_output=True, check=True, timeout=30)
+        result = subprocess.run(args, capture_output=True, check=True, timeout=30, env=system_environment())
         return result.stdout
     except (OSError, subprocess.SubprocessError) as exc:
         # CalledProcessError's text omits the tool's own explanation, e.g. diskutil's "dissented by PID".

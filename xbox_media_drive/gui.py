@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError, __version__
-from .devices import discover, is_disk_mounted, is_mounted, mac_full_disk_access, unmount, whole_disk
+from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_access, system_environment, unmount,
+                      whole_disk)
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
@@ -178,7 +179,7 @@ class Worker(QThread):
             else:
                 # NTFS-3G's security API requires root for images as well as disks.
                 command = helper_command(self.arguments, elevate=True)
-                process = subprocess.run(command, capture_output=True, text=True)
+                process = subprocess.run(command, capture_output=True, text=True, env=system_environment())
                 self.done.emit(parse_helper_output(process.stdout, process.stderr, process.returncode))
         except Exception as exc:
             self.failed.emit(str(exc))

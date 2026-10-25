@@ -49,7 +49,7 @@ chmod +x Xbox-Media-Drive-Helper-*.AppImage
 ./Xbox-Media-Drive-Helper-*.AppImage
 ```
 
-- **FUSE.** AppImages mount themselves with FUSE, which most desktop distributions already include. Where it is missing, install `libfuse2` (Debian and Ubuntu 22.04) or `fuse3`, or run with `--appimage-extract-and-run` to skip FUSE. The CLI is included: `./Xbox-Media-Drive-Helper-*.AppImage --cli doctor`.
+- **FUSE.** AppImages mount themselves with FUSE, which most desktop distributions already include. Where it is missing, install `fuse3`, or run with `--appimage-extract-and-run` to skip FUSE. In an X11 session, Qt also needs the system's `libxcb-cursor0` (`xcb-util-cursor` on some distributions); Wayland sessions don't. The CLI is included: `./Xbox-Media-Drive-Helper-*.AppImage --cli doctor`.
 - **Authorization.** Disk operations go through `pkexec`, so a PolicyKit authentication agent must be running (any desktop session has one), and it asks for authorization on each operation.
 - **Trust.** Authorizing it lets that `.AppImage` file run as root: the app starts the file itself, not a copy inside the user-owned FUSE mount, which root cannot read. Keep the file somewhere only you control, such as a directory in your home folder that other users and programs cannot write to. This is the same trust as running a source install with `sudo`.
 
