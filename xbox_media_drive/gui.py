@@ -519,6 +519,8 @@ class MainWindow(QMainWindow):
             self.log("Could not update the KDE Disks & Devices entry: {}".format(error))
 
     def set_kde_entry(self, checked):
+        # Plasma watches the actions folder only if it existed when Plasma started.
+        first_time = checked and not kde.action_path().parent.is_dir()
         try:
             if checked:
                 kde.install(kde.appimage_path())
@@ -532,9 +534,12 @@ class MainWindow(QMainWindow):
         if checked:
             box = QMessageBox(QMessageBox.Information, "Added to Disks & Devices", "Added to Disks & Devices",
                               QMessageBox.Ok, self)
+            restart = ("Plasma only notices the first entry after it restarts. Log out and back in, or run "
+                       "“systemctl --user restart plasma-plasmashell” once. Then reconnect the drive.\n\n"
+                       if first_time else "")
             box.setInformativeText(
                 "KDE Plasma's Disks & Devices menu now offers “Open in Xbox Media Drive Helper” for NTFS drives. "
-                "If a drive that is already plugged in doesn't show it, reconnect the drive.\n\n"
+                "If a drive that is already plugged in doesn't show it, reconnect the drive.\n\n" + restart +
                 "The entry points at this .AppImage file. If you move the file, open the app once from its new "
                 "location to update the entry.\n\n"
                 "Before you delete this .AppImage, turn this option off again. Otherwise the entry stays in the "

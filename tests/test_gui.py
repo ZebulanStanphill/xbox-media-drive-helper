@@ -1237,15 +1237,27 @@ class KdeEntryTests(unittest.TestCase):
         shown = []
         with patch("xbox_media_drive.kde.install") as install, patch("xbox_media_drive.kde.remove") as remove, \
                 patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))), \
-                patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"):
+                patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                patch("xbox_media_drive.kde.action_path", return_value=Path("/nonexistent/solid/actions/x.desktop")):
             window.kde_action.trigger()
         install.assert_called_once_with("/apps/Xbox.AppImage")
         remove.assert_not_called()
         self.assertTrue(window.kde_action.isChecked())
         self.assertEqual(len(shown), 1)
         for text in ("Open in Xbox Media Drive Helper", "NTFS", "reconnect", ".AppImage", "open the app once",
-                     "Before you delete this .AppImage, turn this option off"):
+                     "Before you delete this .AppImage, turn this option off",
+                     "plasma-plasmashell"):
             self.assertIn(text, shown[0][1])
+
+    def test_no_restart_advice_when_the_actions_folder_already_existed(self):
+        window = self.window()
+        shown = []
+        with tempfile.TemporaryDirectory() as folder, patch("xbox_media_drive.kde.install"), \
+                patch.object(QMessageBox, "exec", lambda box: shown.append(box.informativeText())), \
+                patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                patch("xbox_media_drive.kde.action_path", return_value=Path(folder) / "x.desktop"):
+            window.kde_action.trigger()
+        self.assertNotIn("plasma-plasmashell", shown[0])
 
     def test_turning_off_removes_the_entry(self):
         window = self.window(installed=True)
