@@ -32,7 +32,7 @@ def main(argv=None):
         window.close()
         return 0
     from .gui import main as gui_main
-    return gui_main()
+    return gui_main(arguments)
 
 
 if __name__ == "__main__":

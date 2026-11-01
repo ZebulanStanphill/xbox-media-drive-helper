@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+X-KDE-Solid-Predicate=[ IS_NOT OpticalDisc AND [ StorageVolume.ignored == false AND [ StorageVolume.usage == 'FileSystem' AND StorageVolume.fsType == 'ntfs' ] ] ]
+Actions=open;
+# Without this, Plasma mounts the volume before launching the action. The app needs it unmounted.
+X-KDE-SkipMount=true
+
+[Desktop Action open]
+Exec=xbox-media-drive-gui "--device=%d"
+Icon=xbox-media-drive-helper
+Name=Open in Xbox Media Drive Helper

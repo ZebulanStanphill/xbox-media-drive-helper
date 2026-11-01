@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QSizePolicy, QLayout, QProxyStyle, QStyle,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
-from . import DriveError, __version__
+from . import DriveError, __version__, kde
 from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_access, system_environment, unmount,
                       whole_disk)
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
@@ -247,8 +247,10 @@ class Spinner(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, auto_refresh=True):
+    def __init__(self, auto_refresh=True, initial_device=None):
         super().__init__()
+        # A drive to select once the first listing arrives, e.g. from KDE's Disks & Devices menu.
+        self.initial_device = os.path.realpath(initial_device) if initial_device else None
         self.setWindowTitle("Xbox Media Drive Helper")
         self.setWindowIcon(app_icon())
         self.resize(1040, 940)
@@ -289,6 +291,16 @@ class MainWindow(QMainWindow):
         self.about_action = QAction("About Xbox Media Drive Helper", self)
         self.about_action.setMenuRole(QAction.AboutRole)
         self.about_action.triggered.connect(self.show_about)
+        self.kde_action = None
+        appimage = kde.appimage_path()
+        if appimage:
+            self.kde_action = QAction("Show in KDE's Disks && Devices", self)
+            self.kde_action.setCheckable(True)
+            self.kde_action.setChecked(kde.installed())
+            # triggered, not toggled: reverting the check after a failure must not run this again.
+            self.kde_action.triggered.connect(self.set_kde_entry)
+            self.options_menu = self.menuBar().addMenu("Options")
+            self.options_menu.addAction(self.kde_action)
         self.menuBar().addMenu("Help").addAction(self.about_action)
 
         intro = QFrame()
@@ -493,7 +505,39 @@ class MainWindow(QMainWindow):
         self.check_disk_access()
         QGuiApplication.instance().applicationStateChanged.connect(self.application_state_changed)
         if auto_refresh:
+            self.refresh_kde_entry()
             self.refresh_devices()
+
+    def refresh_kde_entry(self):
+        appimage = kde.appimage_path()
+        if not appimage:
+            return
+        try:
+            if kde.refresh(appimage):
+                self.log("Updated the KDE Disks & Devices entry to open this AppImage.")
+        except (OSError, ValueError) as error:
+            self.log("Could not update the KDE Disks & Devices entry: {}".format(error))
+
+    def set_kde_entry(self, checked):
+        try:
+            if checked:
+                kde.install(kde.appimage_path())
+            else:
+                kde.remove()
+        except (OSError, ValueError) as error:
+            self.kde_action.setChecked(not checked)
+            QMessageBox.warning(self, "KDE entry not changed", "Could not {} the Disks & Devices entry:\n\n{}".format(
+                "add" if checked else "remove", error))
+            return
+        if checked:
+            box = QMessageBox(QMessageBox.Information, "Added to Disks & Devices", "Added to Disks & Devices",
+                              QMessageBox.Ok, self)
+            box.setInformativeText(
+                "KDE Plasma's Disks & Devices menu now offers “Open in Xbox Media Drive Helper” for NTFS drives. "
+                "If a drive that is already plugged in doesn't show it, reconnect the drive.\n\n"
+                "The entry points at this .AppImage file. If you move the file, open the app once from its new "
+                "location to update the entry.")
+            box.exec()
 
     def check_disk_access(self):
         self.disk_access_notice.setVisible(mac_full_disk_access() is False)
@@ -826,6 +870,7 @@ class MainWindow(QMainWindow):
     def completed(self, result):
         if self.action == "list":
             previous = self.selected_device()
+            requested, self.initial_device = self.initial_device, None
             self.drives.clear()
             self.add_image_item()
             for device in result["devices"]:
@@ -835,11 +880,24 @@ class MainWindow(QMainWindow):
                     device["path"] + "  ·  Mounted — click Unmount" if device["mounted"] else device["path"]))
                 item.setData(Qt.UserRole, device)
                 self.drives.addItem(item)
-            for row in range(self.drives.count()):
-                item = self.drives.item(row)
-                if previous and item.data(Qt.UserRole)["path"] == previous["path"]:
-                    self.drives.setCurrentItem(item)
-                    break
+            rows = [self.drives.item(row) for row in range(self.drives.count())]
+            match = None
+            if requested:
+                # This one listing selects the requested drive instead of keeping the previous selection.
+                match = next((item for item in rows if not item.data(Qt.UserRole).get("image")
+                              and os.path.realpath(item.data(Qt.UserRole)["path"]) == requested), None)
+                if match is not None:
+                    self.drives.setCurrentItem(match)
+                    self.log("Selected {}.".format(match.data(Qt.UserRole)["path"]))
+                else:
+                    self.report(QMessageBox.Information, "Drive not listed",
+                                "{} isn't among the external volumes this app found. The app works only with external "
+                                "drives. Connect the drive and click Refresh drives.".format(requested))
+            if previous and match is None:
+                for item in rows:
+                    if item.data(Qt.UserRole)["path"] == previous["path"]:
+                        self.drives.setCurrentItem(item)
+                        break
             if self.drives.currentItem() is None:
                 self.set_target("")
             self.log("Found {} external volumes.".format(len(result["devices"])))
@@ -1001,6 +1059,8 @@ class MainWindow(QMainWindow):
         self.followups.append(show)
 
     def failed(self, message):
+        if self.action == "list":
+            self.initial_device = None
         self.invalidate()
         self.followups = []
         self.log("Error: " + message)
@@ -1044,9 +1104,32 @@ class MainWindow(QMainWindow):
             event.accept()
 
 
-def main():
+USAGE = "usage: xbox-media-drive-gui [--device PATH]"
+
+
+def parse_arguments(arguments):
+    """Return the --device value (or None). Raise ValueError for anything else."""
+    if not arguments:
+        return None
+    if len(arguments) == 2 and arguments[0] == "--device":
+        device = arguments[1]
+    elif len(arguments) == 1 and arguments[0].startswith("--device="):
+        device = arguments[0][len("--device="):]
+    else:
+        raise ValueError("unrecognized arguments: " + " ".join(arguments))
+    if not device:
+        raise ValueError("--device needs a device path")
+    return device
+
+
+def main(argv=None):
+    try:
+        device = parse_arguments(list(sys.argv[1:] if argv is None else argv))
+    except ValueError as error:
+        print("{}\nerror: {}".format(USAGE, error), file=sys.stderr)
+        return 2
     app = QApplication.instance() or QApplication(sys.argv[:1])
     configure(app)
-    window = MainWindow()
+    window = MainWindow(initial_device=device)
     window.show()
     return app.exec()

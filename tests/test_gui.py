@@ -15,7 +15,8 @@ try:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QAction, QWheelEvent
     from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox, QStyle
-    from xbox_media_drive.gui import MainWindow, PRIVACY_SETTINGS, SOURCE_URL, app_icon, configure, helper_command, parse_helper_output
+    from xbox_media_drive.gui import (MainWindow, PRIVACY_SETTINGS, SOURCE_URL, app_icon, configure, helper_command, main,
+                                  parse_arguments, parse_helper_output)
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -1025,3 +1026,270 @@ class GUITests(unittest.TestCase):
             self.window.about_action.trigger()
             self.window.about_button.click()
         self.assertEqual(box.exec.call_count, 2)
+
+
+@unittest.skipUnless(HAS_QT, "Install the gui extra to test the desktop interface")
+class DeviceArgumentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        configure(cls.app)
+
+    def setUp(self):
+        patch("xbox_media_drive.gui.mac_full_disk_access", return_value=None).start()
+        self.addCleanup(patch.stopall)
+        self.windows = []
+
+    def tearDown(self):
+        for window in self.windows:
+            window.close()
+            window.deleteLater()
+        self.app.processEvents()
+
+    def window(self, **options):
+        window = MainWindow(auto_refresh=False, **options)
+        self.windows.append(window)
+        return window
+
+    def volume(self, path, **extra):
+        return dict({"path": path, "label": "Media", "size": 10**9, "filesystem": "NTFS", "mounted": False,
+                     "external": True, "disk": path.rstrip("0123456789")}, **extra)
+
+    def test_device_argument_forms(self):
+        self.assertIsNone(parse_arguments([]))
+        self.assertEqual(parse_arguments(["--device", "/dev/sdb1"]), "/dev/sdb1")
+        self.assertEqual(parse_arguments(["--device=/dev/sdb1"]), "/dev/sdb1")
+        for arguments in (["/dev/sdb1"], ["--device"], ["--device="], ["--device", ""], ["--devices=/dev/sdb1"],
+                          ["--device", "/dev/sdb1", "extra"], ["--device=/dev/sdb1", "--device=/dev/sdc1"],
+                          ["--cli"]):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                parse_arguments(arguments)
+
+    def test_main_passes_the_device_to_the_window(self):
+        for arguments in (["--device", "/dev/sdb1"], ["--device=/dev/sdb1"]):
+            with self.subTest(arguments=arguments), \
+                    patch("xbox_media_drive.gui.configure"), \
+                    patch("xbox_media_drive.gui.MainWindow") as window, \
+                    patch("xbox_media_drive.gui.QApplication") as application:
+                application.instance.return_value.exec.return_value = 0
+                self.assertEqual(main(arguments), 0)
+            window.assert_called_once_with(initial_device="/dev/sdb1")
+            window.return_value.show.assert_called_once_with()
+
+    def test_main_without_arguments_uses_sys_argv(self):
+        with patch.object(sys, "argv", ["xbox-media-drive-gui", "--device=/dev/sdc1"]), \
+                patch("xbox_media_drive.gui.configure"), \
+                patch("xbox_media_drive.gui.MainWindow") as window, \
+                patch("xbox_media_drive.gui.QApplication"):
+            main()
+        window.assert_called_once_with(initial_device="/dev/sdc1")
+
+    def test_bad_arguments_print_usage_and_create_no_window(self):
+        for arguments in (["/dev/sdb1"], ["--device"], ["--bogus"]):
+            with self.subTest(arguments=arguments), \
+                    patch("xbox_media_drive.gui.MainWindow") as window, \
+                    patch("xbox_media_drive.gui.QApplication") as application, \
+                    patch("sys.stderr") as stderr:
+                self.assertEqual(main(arguments), 2)
+            window.assert_not_called()
+            application.assert_not_called()
+            written = "".join(call.args[0] for call in stderr.write.call_args_list)
+            self.assertIn("usage: xbox-media-drive-gui [--device PATH]", written)
+
+    def test_first_listing_selects_the_requested_device_by_real_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            link = Path(temp) / "link"
+            link.symlink_to("/dev/sdb1")
+            window = self.window(initial_device=str(link))
+        self.assertEqual(window.initial_device, os.path.realpath("/dev/sdb1"))
+        window.action = "list"
+        with patch.object(window, "report") as report:
+            window.completed({"devices": [self.volume("/dev/sdc1"), self.volume("/dev/sdb1")]})
+        report.assert_not_called()
+        self.assertEqual(window.selected_device()["path"], "/dev/sdb1")
+        self.assertEqual(window.target_path, "/dev/sdb1")
+        self.assertIn("Selected /dev/sdb1.", window.activity.toPlainText())
+        self.assertIsNone(window.initial_device)
+
+    def test_requested_device_replaces_the_previous_selection_for_one_listing_only(self):
+        window = self.window(initial_device="/dev/sdb1")
+        devices = [self.volume("/dev/sda1"), self.volume("/dev/sdb1")]
+        window.action = "list"
+        window.completed({"devices": devices})
+        window.drives.setCurrentRow(0)
+        self.assertEqual(window.target_path, "/dev/sda1")
+        window.completed({"devices": devices})
+        self.assertEqual(window.target_path, "/dev/sda1")
+
+    def test_requested_device_wins_over_the_previous_selection(self):
+        window = self.window(initial_device="/dev/sdb1")
+        devices = [self.volume("/dev/sda1"), self.volume("/dev/sdb1")]
+        window.action = "list"
+        window.completed({"devices": devices[:1]})
+        window.initial_device = os.path.realpath("/dev/sdb1")
+        window.drives.setCurrentRow(0)
+        window.completed({"devices": devices})
+        self.assertEqual(window.target_path, "/dev/sdb1")
+
+    def test_missing_device_is_reported_and_cleared(self):
+        window = self.window(initial_device="/dev/sdz9")
+        window.action = "list"
+        with patch.object(window, "report") as report:
+            window.completed({"devices": [self.volume("/dev/sdc1")]})
+        self.assertEqual(report.call_args.args[:2], (QMessageBox.Information, "Drive not listed"))
+        message = report.call_args.args[2]
+        self.assertIn(os.path.realpath("/dev/sdz9"), message)
+        self.assertIn("external", message)
+        self.assertIn("Refresh", message)
+        self.assertIsNone(window.initial_device)
+        self.assertIsNone(window.drives.currentItem())
+        self.assertEqual(window.target_path, "")
+        with patch.object(window, "report") as report:
+            window.completed({"devices": [self.volume("/dev/sdc1")]})
+        report.assert_not_called()
+
+    def test_image_item_is_never_matched_as_the_requested_device(self):
+        with tempfile.NamedTemporaryFile() as image:
+            window = self.window(initial_device=image.name)
+            window.image_path = image.name
+            window.action = "list"
+            with patch.object(window, "report") as report:
+                window.completed({"devices": []})
+        report.assert_called_once()
+        self.assertEqual(report.call_args.args[:2], (QMessageBox.Information, "Drive not listed"))
+
+    def test_pending_request_is_cleared_when_the_listing_fails(self):
+        window = self.window(initial_device="/dev/sdb1")
+        window.action = "list"
+        window.failed("boom")
+        self.assertIsNone(window.initial_device)
+        window.followups.clear()
+
+    def test_other_failures_keep_the_pending_request(self):
+        window = self.window(initial_device="/dev/sdb1")
+        window.action = "unmount"
+        window.failed("boom")
+        self.assertEqual(window.initial_device, os.path.realpath("/dev/sdb1"))
+        window.followups.clear()
+
+    def test_listing_without_a_request_selects_nothing(self):
+        window = self.window()
+        self.assertIsNone(window.initial_device)
+        window.action = "list"
+        with patch.object(window, "report") as report:
+            window.completed({"devices": [self.volume("/dev/sdc1")]})
+        report.assert_not_called()
+        self.assertIsNone(window.drives.currentItem())
+
+
+@unittest.skipUnless(HAS_QT, "Install the gui extra to test the desktop interface")
+class KdeEntryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        configure(cls.app)
+
+    def setUp(self):
+        patch("xbox_media_drive.gui.mac_full_disk_access", return_value=None).start()
+        self.addCleanup(patch.stopall)
+        self.windows = []
+
+    def tearDown(self):
+        for window in self.windows:
+            window.close()
+            window.deleteLater()
+        self.app.processEvents()
+
+    def window(self, appimage="/apps/Xbox.AppImage", installed=False, auto_refresh=False):
+        with patch("xbox_media_drive.kde.appimage_path", return_value=appimage), \
+                patch("xbox_media_drive.kde.installed", return_value=installed), \
+                patch.object(MainWindow, "refresh_devices"):
+            window = MainWindow(auto_refresh=auto_refresh)
+        self.windows.append(window)
+        return window
+
+    def test_no_toggle_outside_an_appimage(self):
+        window = self.window(appimage=None)
+        self.assertIsNone(window.kde_action)
+        self.assertEqual([action.text() for action in window.menuBar().actions()], ["Help"])
+
+    def test_toggle_is_in_an_options_menu_before_help(self):
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                window = self.window(installed=installed)
+                self.assertEqual([action.text() for action in window.menuBar().actions()], ["Options", "Help"])
+                self.assertTrue(window.kde_action.isCheckable())
+                self.assertEqual(window.kde_action.isChecked(), installed)
+                self.assertEqual(window.kde_action.text(), "Show in KDE's Disks && Devices")
+                self.assertEqual(window.options_menu.actions(), [window.kde_action])
+
+    def test_turning_on_installs_the_appimage_and_explains(self):
+        window = self.window()
+        shown = []
+        with patch("xbox_media_drive.kde.install") as install, patch("xbox_media_drive.kde.remove") as remove, \
+                patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))), \
+                patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"):
+            window.kde_action.trigger()
+        install.assert_called_once_with("/apps/Xbox.AppImage")
+        remove.assert_not_called()
+        self.assertTrue(window.kde_action.isChecked())
+        self.assertEqual(len(shown), 1)
+        for text in ("Open in Xbox Media Drive Helper", "NTFS", "reconnect", ".AppImage", "open the app once"):
+            self.assertIn(text, shown[0][1])
+
+    def test_turning_off_removes_the_entry(self):
+        window = self.window(installed=True)
+        with patch("xbox_media_drive.kde.install") as install, patch("xbox_media_drive.kde.remove") as remove, \
+                patch.object(QMessageBox, "exec") as box, patch.object(QMessageBox, "warning") as warning:
+            window.kde_action.trigger()
+        remove.assert_called_once_with()
+        install.assert_not_called()
+        box.assert_not_called()
+        warning.assert_not_called()
+        self.assertFalse(window.kde_action.isChecked())
+
+    def test_failure_warns_and_reverts_without_retrying(self):
+        for installed, function in ((False, "install"), (True, "remove")):
+            for error in (OSError("read-only"), ValueError("bad path")):
+                with self.subTest(function=function, error=error):
+                    window = self.window(installed=installed)
+                    with patch("xbox_media_drive.kde." + function, side_effect=error) as call, \
+                            patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                            patch.object(QMessageBox, "warning") as warning, patch.object(QMessageBox, "exec") as box:
+                        window.kde_action.trigger()
+                    self.assertEqual(call.call_count, 1)
+                    warning.assert_called_once()
+                    self.assertIn(str(error), warning.call_args.args[2])
+                    box.assert_not_called()
+                    self.assertEqual(window.kde_action.isChecked(), installed)
+
+    def test_startup_refresh_reports_a_rewrite(self):
+        window = self.window()
+        with patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                patch("xbox_media_drive.kde.refresh", return_value=True) as refresh:
+            window.refresh_kde_entry()
+        refresh.assert_called_once_with("/apps/Xbox.AppImage")
+        self.assertIn("Updated the KDE Disks & Devices entry to open this AppImage.", window.activity.toPlainText())
+        window.activity.clear()
+        with patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                patch("xbox_media_drive.kde.refresh", return_value=False):
+            window.refresh_kde_entry()
+        self.assertEqual(window.activity.toPlainText(), "")
+
+    def test_startup_refresh_logs_errors_and_skips_other_installs(self):
+        window = self.window()
+        with patch("xbox_media_drive.kde.appimage_path", return_value="/apps/Xbox.AppImage"), \
+                patch("xbox_media_drive.kde.refresh", side_effect=OSError("denied")):
+            window.refresh_kde_entry()
+        self.assertIn("denied", window.activity.toPlainText())
+        with patch("xbox_media_drive.kde.appimage_path", return_value=None), \
+                patch("xbox_media_drive.kde.refresh") as refresh:
+            window.refresh_kde_entry()
+        refresh.assert_not_called()
+
+    def test_construction_refreshes_only_when_listing_automatically(self):
+        for auto_refresh in (False, True):
+            with self.subTest(auto_refresh=auto_refresh), \
+                    patch("xbox_media_drive.kde.refresh", return_value=False) as refresh:
+                self.window(auto_refresh=auto_refresh)
+            self.assertEqual(refresh.call_count, int(auto_refresh))

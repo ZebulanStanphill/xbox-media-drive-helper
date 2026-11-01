@@ -52,8 +52,9 @@ chmod +x Xbox-Media-Drive-Helper-*.AppImage
 - **FUSE.** AppImages mount themselves with FUSE, which most desktop distributions already include. Where it is missing, install `fuse3`, or run with `--appimage-extract-and-run` to skip FUSE. In an X11 session, Qt also needs the system's `libxcb-cursor0` (`xcb-util-cursor` on some distributions); Wayland sessions don't. The CLI is included: `./Xbox-Media-Drive-Helper-*.AppImage --cli doctor`.
 - **Authorization.** Disk operations go through `pkexec`, so a PolicyKit authentication agent must be running (any desktop session has one), and it asks for authorization on each operation.
 - **Trust.** Authorizing it lets that `.AppImage` file run as root: the app starts the file itself, not a copy inside the user-owned FUSE mount, which root cannot read. Keep the file somewhere only you control, such as a directory in your home folder that other users and programs cannot write to. This is the same trust as running a source install with `sudo`.
+- **KDE Plasma.** **Options ▸ Show in KDE's Disks & Devices** adds "Open in Xbox Media Drive Helper" for NTFS drives to Plasma's Disks & Devices menu; it opens the app with that drive selected, and does not mount the drive. The entry records this `.AppImage` file's path, so if you move the file, open the app once from its new location to update it. Turn the option off to remove the entry.
 
-`packaging/linux/install.sh` is for source installs; an AppImage needs no installation.
+`packaging/linux/install.sh` is for source installs; an AppImage needs no installation. The script also adds the Disks & Devices entry, and `xbox-media-drive-gui --device /dev/sdX1` selects a drive on its own.
 
 ### From source / Linux
 

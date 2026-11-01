@@ -20,6 +20,12 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(main(["--cli", "--json", "inspect", "/dev/test"]), 3)
         cli.assert_called_once_with(["--json", "inspect", "/dev/test"])
 
+    def test_packaged_gui_receives_the_remaining_arguments(self):
+        for arguments in ([], ["--device", "/dev/sdb1"], ["--device=/dev/sdb1"]):
+            with self.subTest(arguments=arguments), patch("xbox_media_drive.gui.main", return_value=0) as gui:
+                self.assertEqual(main(list(arguments)), 0)
+            gui.assert_called_once_with(arguments)
+
     def test_macho_versions_are_distinct_from_sdk_version(self):
         commands = """Load command 0
           cmd LC_BUILD_VERSION
