@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from xbox_media_drive import DriveError
+from xbox_media_drive.devices import identity
 from xbox_media_drive.native import Entry
 from xbox_media_drive.operations import clear_dirty, inspect, journal, journal_info, prepare, put_meta, restore
 from xbox_media_drive.security import APP_PACKAGES, MODIFY, grant, signature
@@ -98,6 +99,23 @@ class OperationTests(unittest.TestCase):
             write.assert_called_once_with()
         self.assertEqual(self.volume.writes, 0)
         self.assertFalse(Path(self.backup).exists())
+
+    def test_clear_dirty_expected_volume(self):
+        self.volume.is_dirty = True
+        info = identity(self.target)
+        with patch.object(self.volume, "clear_dirty", create=True,
+                          side_effect=lambda: setattr(self.volume, "is_dirty", False)) as write:
+            result = clear_dirty(self.target, volume_factory=self.volume, expected_boot=info["boot_sha256"])
+            write.assert_called_once_with()
+        self.assertEqual(result, {"target": self.target, "dirty": False, "cleared": True, "identity": info})
+
+    def test_clear_dirty_wrong_volume_writes_nothing(self):
+        self.volume.is_dirty = True
+        with patch.object(self.volume, "clear_dirty", create=True) as write:
+            with self.assertRaisesRegex(DriveError, "no longer matches"):
+                clear_dirty(self.target, volume_factory=self.volume, expected_boot="wrong-volume")
+            write.assert_not_called()
+        self.assertTrue(self.volume.is_dirty)
 
     def test_clear_dirty_verification_failure(self):
         self.volume.is_dirty = True

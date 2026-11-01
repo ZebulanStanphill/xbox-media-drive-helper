@@ -35,6 +35,7 @@ def parser():
     check.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
     clear = sub.add_parser("clear-dirty", help="Clear the NTFS dirty flag after Windows' read-only chkdsk finds no problems")
     clear.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
+    clear.add_argument("--expect-volume", help="Require this boot_sha256 from a previous inspection")
     clear.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
     for command in ("inspect", "prepare", "restore"):
         cmd = sub.add_parser(command, help={"inspect": "Read-only permission preflight",
@@ -104,7 +105,7 @@ def main(argv=None):
                       end="", file=sys.stderr, flush=True)
                 if input() != args.target:
                     raise DriveError("Confirmation did not match; no changes made.")
-            result = clear_dirty(args.target, args.library)
+            result = clear_dirty(args.target, args.library, expected_boot=args.expect_volume)
         else:
             if args.command in ("prepare", "restore") and not args.yes:
                 if not sys.stdin.isatty():

@@ -247,7 +247,7 @@ class GUITests(unittest.TestCase):
     def test_clear_dirty_requires_confirmation_and_runs_cli(self):
         self.window.set_target("/tmp/volume.img")
         self.window.library.setText("/tmp/libntfs.dylib")
-        self.window.inspection = {"dirty": True}
+        self.window.inspection = {"dirty": True, "identity": {"boot_sha256": "volume-id"}}
         for answer in (QMessageBox.No, QMessageBox.Yes):
             with self.subTest(answer=answer), patch("xbox_media_drive.gui.is_mounted", return_value=False), \
                     patch.object(QMessageBox, "question", return_value=answer) as question, \
@@ -257,7 +257,8 @@ class GUITests(unittest.TestCase):
                 self.assertIn("/tmp/volume.img", question.call_args.args[2])
                 if answer == QMessageBox.Yes:
                     start.assert_called_once_with("clear-dirty", ["--library", "/tmp/libntfs.dylib",
-                                                               "clear-dirty", "/tmp/volume.img", "--yes"])
+                                                               "clear-dirty", "/tmp/volume.img",
+                                                               "--expect-volume", "volume-id", "--yes"])
                 else:
                     start.assert_not_called()
         self.window.invalidate()
@@ -265,19 +266,26 @@ class GUITests(unittest.TestCase):
             self.window.clear_dirty_volume()
         question.assert_not_called()
 
-    def test_clear_dirty_success_reinspects_after_worker_finishes(self):
+    def test_clear_dirty_success_keeps_the_inspection_without_inspecting_again(self):
         self.window.set_target("/tmp/volume.img")
+        self.window.inspection = {"ready": True, "changes_needed": 1, "dirty": True,
+                                  "identity": {"boot_sha256": "volume-id"}}
+        self.window.dirty_warning.show()
+        self.window.clear_dirty_button.show()
         self.window.action = "clear-dirty"
         self.window.completed({"target": "/tmp/volume.img", "dirty": False, "cleared": True})
+        self.assertFalse(self.window.inspection["dirty"])
+        self.assertEqual(self.window.inspection["identity"], {"boot_sha256": "volume-id"})
+        self.assertTrue(self.window.dirty_warning.isHidden())
         self.assertTrue(self.window.clear_dirty_button.isHidden())
+        self.assertEqual(len(self.window.followups), 1)
         shown = []
         with patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))):
             self.window.followups.pop(0)()
         self.assertEqual(shown[0][0], "Dirty flag cleared")
         self.assertIn("/tmp/volume.img is cleared", shown[0][1])
-        with patch("xbox_media_drive.gui.is_mounted", return_value=False), patch.object(self.window, "start") as start:
-            self.window.followups.pop(0)()
-        start.assert_called_once_with("inspect", ["inspect", "/tmp/volume.img", "--access", "modify"])
+        self.assertNotIn("inspect", shown[0][1])
+        self.assertEqual(self.window.followups, [])
 
     def test_clear_dirty_when_already_clear_says_nothing_changed(self):
         self.window.set_target("/tmp/volume.img")
@@ -288,7 +296,8 @@ class GUITests(unittest.TestCase):
             self.window.followups.pop(0)()
         self.assertEqual(shown[0][0], "Dirty flag already clear")
         self.assertIn("nothing changed", shown[0][1])
-        self.assertEqual(len(self.window.followups), 1)
+        self.assertNotIn("inspect", shown[0][1])
+        self.assertEqual(self.window.followups, [])
 
     def test_clear_dirty_button_disabled_while_worker_runs(self):
         self.window.set_target("/tmp/volume.img")

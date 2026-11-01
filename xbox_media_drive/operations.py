@@ -28,15 +28,23 @@ CLEAR_DIRTY_CONFIRMATION = ("Clearing the dirty flag hides whatever Windows was 
                             "This clears only the dirty flag; it doesn't reset the journal or repair anything.")
 
 
-def clear_dirty(target, library=None, volume_factory=Volume):
+def clear_dirty(target, library=None, volume_factory=Volume, expected_boot=None):
     target = validate_target(target)
+    info = None
+    if expected_boot is not None:
+        info = identity(target)
+        if info["boot_sha256"] != expected_boot:
+            raise DriveError("The selected volume no longer matches the inspection. Inspect the drive again before clearing the dirty flag.")
     with volume_factory(target, writable=True, library=library) as volume:
         cleared = volume.dirty()
         if cleared:
             volume.clear_dirty()
             if volume.dirty():
                 raise DriveError("NTFS dirty flag verification failed: the flag is still set.")
-    return {"target": target, "dirty": False, "cleared": cleared}
+    result = {"target": target, "dirty": False, "cleared": cleared}
+    if info is not None:
+        result["identity"] = info
+    return result
 
 
 def inspect(target, access="modify", library=None, volume_factory=Volume):

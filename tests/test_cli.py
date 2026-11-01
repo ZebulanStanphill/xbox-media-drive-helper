@@ -34,6 +34,14 @@ class CLITests(unittest.TestCase):
                 if expected:
                     self.assertTrue(json.loads(output)["cleared"])
 
+    def test_clear_dirty_passes_expected_volume(self):
+        for extra, expected in (([], None), (["--expect-volume", "volume-id"], "volume-id")):
+            with self.subTest(extra=extra), patch("sys.stdin.isatty", return_value=False), \
+                    patch("xbox_media_drive.cli.clear_dirty", return_value={"dirty": False, "cleared": True}) as clear:
+                status, _, _ = self.call(["--json", "clear-dirty", "/dev/test"] + extra + ["--yes"])
+                self.assertEqual(status, 0)
+                clear.assert_called_once_with("/dev/test", None, expected_boot=expected)
+
     def test_check_exit_codes_and_problems_note(self):
         for verdict, expected, noted in (("clean", 0, False), ("problems", 3, True)):
             for machine in (False, True):

@@ -707,7 +707,8 @@ class MainWindow(QMainWindow):
                                   "repair it in Windows instead.").format(check["time"])
         default = QMessageBox.No if check and not check["clean"] else QMessageBox.NoButton
         if QMessageBox.question(self, "Clear Dirty Flag", message, QMessageBox.Yes | QMessageBox.No, default) == QMessageBox.Yes:
-            self.start("clear-dirty", self.arguments("clear-dirty") + ["--yes"])
+            self.start("clear-dirty", self.arguments("clear-dirty") + [
+                "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"])
 
     def prepare_volume(self):
         if not self.inspection or not self.inspection["ready"]:
@@ -944,18 +945,19 @@ class MainWindow(QMainWindow):
                 self.report(QMessageBox.Warning, "Problems found", CHECK_PROBLEMS_NOTE, details=result["output"])
         elif self.action == "clear-dirty":
             self.filesystem_check = None
-            self.invalidate()
+            # Clearing changes only the dirty flag, so the inspection still describes the drive.
+            if self.inspection:
+                self.inspection["dirty"] = False
+            self.dirty_warning.hide()
+            self.clear_dirty_button.hide()
             self.log("NTFS dirty flag cleared." if result["cleared"] else "NTFS dirty flag was already clear.")
             if result["cleared"]:
                 self.report(QMessageBox.Information, "Dirty flag cleared",
                             "The NTFS dirty flag on {} is cleared, and reading it back from the drive confirmed it. "
-                            "Linux will no longer refuse to mount the drive because of this flag. Nothing else on the drive changed.\n\n"
-                            "Click OK to inspect the drive again.".format(self.target_path))
+                            "Linux will no longer refuse to mount the drive because of this flag. Nothing else on the drive changed.".format(self.target_path))
             else:
                 self.report(QMessageBox.Information, "Dirty flag already clear",
-                            "The NTFS dirty flag on {} was already clear, so nothing changed.\n\n"
-                            "Click OK to inspect the drive again.".format(self.target_path))
-            self.followups.append(self.inspect_volume)
+                            "The NTFS dirty flag on {} was already clear, so nothing changed.".format(self.target_path))
         elif self.action == "check-mode":
             self.disk_layout = result
             description = {"game": "Game mode (Xbox signature)", "media": "Media / PC mode (standard signature)"}.get(
