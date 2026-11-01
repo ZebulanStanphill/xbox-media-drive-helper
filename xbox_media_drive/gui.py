@@ -536,7 +536,9 @@ class MainWindow(QMainWindow):
                 "KDE Plasma's Disks & Devices menu now offers “Open in Xbox Media Drive Helper” for NTFS drives. "
                 "If a drive that is already plugged in doesn't show it, reconnect the drive.\n\n"
                 "The entry points at this .AppImage file. If you move the file, open the app once from its new "
-                "location to update the entry.")
+                "location to update the entry.\n\n"
+                "Before you delete this .AppImage, turn this option off again. Otherwise the entry stays in the "
+                "menu and does nothing.")
             box.exec()
 
     def check_disk_access(self):

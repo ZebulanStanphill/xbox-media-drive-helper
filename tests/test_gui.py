@@ -1243,7 +1243,8 @@ class KdeEntryTests(unittest.TestCase):
         remove.assert_not_called()
         self.assertTrue(window.kde_action.isChecked())
         self.assertEqual(len(shown), 1)
-        for text in ("Open in Xbox Media Drive Helper", "NTFS", "reconnect", ".AppImage", "open the app once"):
+        for text in ("Open in Xbox Media Drive Helper", "NTFS", "reconnect", ".AppImage", "open the app once",
+                     "Before you delete this .AppImage, turn this option off"):
             self.assertIn(text, shown[0][1])
 
     def test_turning_off_removes_the_entry(self):
