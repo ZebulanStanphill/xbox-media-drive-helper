@@ -7,8 +7,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - if: runner.os == 'Linux'
@@ -27,8 +27,8 @@ jobs:
     # Build on the oldest glibc we support: the AppImage runs on anything newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       # The build tools, the libraries Qt's offscreen platform loads, and FUSE for mounting the AppImage.
@@ -58,7 +58,7 @@ jobs:
           sudo "$image" --cli --json check "$PWD/fresh.img" | tee check.json
           python -c "import json; r = json.load(open('check.json')); assert r['verdict'] == 'clean' and r['bundled'] is True, r"
           sha256sum -c fresh.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-appimage
           path: dist/linux/*
