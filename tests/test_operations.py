@@ -35,6 +35,7 @@ class MemoryVolume:
         self.writes = 0
         self.skipped = []
         self.is_dirty = False
+        self.journal = "clean"
 
     def __call__(self, *args, **kwargs):
         return self
@@ -47,6 +48,9 @@ class MemoryVolume:
 
     def dirty(self):
         return self.is_dirty
+
+    def journal_state(self):
+        return self.journal
 
     def walk(self):
         for path, (ref, directory, raw) in self.files.items():
@@ -131,6 +135,14 @@ class OperationTests(unittest.TestCase):
         self.assertTrue(info["ready"])
         self.assertTrue(self.prepare()["dirty"])
         self.assertTrue(self.restore()["dirty"])
+
+    def test_inspect_reports_the_journal_state(self):
+        self.assertEqual(inspect(self.target, volume_factory=self.volume)["journal"], "clean")
+        for state in ("open", "windows-cached"):
+            self.volume.journal = state
+            info = inspect(self.target, volume_factory=self.volume)
+            self.assertEqual(info["journal"], state)
+            self.assertTrue(info["ready"])
 
     def test_read_only_inspection_and_round_trip(self):
         info = inspect(self.target, volume_factory=self.volume)

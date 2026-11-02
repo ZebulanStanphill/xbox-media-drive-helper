@@ -21,6 +21,8 @@ from tests.test_security import ace, descriptor
 
 PREFIX = os.environ.get("XMD_TEST_PREFIX")
 HARNESS = os.environ.get("XMD_TEST_HARNESS")
+# The two restart pages ("RSTR", version 1.1, not closed) from the start of an Xbox-used drive's $LogFile.
+XBOX_RESTART_PAGES = (Path(__file__).parent / "fixtures" / "xbox-open-journal-restart-pages.bin").read_bytes()
 
 
 class ImageVolume(Volume):
@@ -68,6 +70,16 @@ class NativeImageTests(unittest.TestCase):
 
     def inspect(self):
         return inspect(self.image, library=self.library, volume_factory=ImageVolume)
+
+    def write_logfile(self, data):
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            volume.shim.xmd_fixture_logfile.argtypes = [C.c_void_p, C.c_char_p, C.c_long]
+            volume.shim.xmd_fixture_logfile.restype = C.c_int
+            self.assertEqual(volume.shim.xmd_fixture_logfile(volume.handle, data, len(data)), 0)
+
+    def journal_state(self):
+        with ImageVolume(self.image, library=self.library) as volume:
+            return volume.journal_state()
 
     def mark_dirty(self, volume):
         volume.shim.xmd_fixture_dirty.argtypes = [C.c_void_p]
@@ -153,6 +165,47 @@ class NativeImageTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
         with ImageVolume(self.image, library=self.library) as volume:
             self.assertEqual({entry.path: volume.get(entry.path) for entry in volume.walk()}, originals)
+
+    def test_fresh_image_has_a_clean_journal(self):
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        self.assertEqual(self.journal_state(), "clean")
+        self.assertEqual(self.inspect()["journal"], "clean")
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+
+    def test_zeroed_restart_page_is_an_open_journal(self):
+        with ImageVolume(self.image, writable=True, library=self.library) as volume:
+            volume.shim.xmd_fixture_open_journal.argtypes = [C.c_void_p]
+            volume.shim.xmd_fixture_open_journal.restype = C.c_int
+            self.assertEqual(volume.shim.xmd_fixture_open_journal(volume.handle), 0)
+        self.assertEqual(self.journal_state(), "open")
+
+    def test_xbox_restart_pages_report_an_open_journal_without_changing_the_image(self):
+        self.write_logfile(XBOX_RESTART_PAGES)
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        self.assertEqual(self.journal_state(), "open")
+        info = self.inspect()
+        self.assertEqual(info["journal"], "open")
+        self.assertFalse(info["dirty"])
+        self.assertTrue(info["ready"])
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        # NTFS-3G itself refuses a writable session on the same drive.
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            ImageVolume(self.image, writable=True, library=self.library)
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            clear_dirty(self.image, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+
+    def test_version_2_restart_pages_report_windows_cached_metadata(self):
+        pages = bytearray(XBOX_RESTART_PAGES)
+        for page in (0, 4096):
+            self.assertEqual(struct.unpack_from("<hh", pages, page + 0x1A), (1, 1))
+            struct.pack_into("<hh", pages, page + 0x1A, 0, 2)  # minor_ver, major_ver
+        self.write_logfile(bytes(pages))
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        self.assertEqual(self.journal_state(), "windows-cached")
+        self.assertEqual(self.inspect()["journal"], "windows-cached")
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        # The writable refusal (EPERM) is only told apart from "not root" when running as root, so it isn't checked here.
 
     def test_real_ntfs_permissions_round_trip_preserves_data_and_boot(self):
         before = Path(self.image).read_bytes()[:512]

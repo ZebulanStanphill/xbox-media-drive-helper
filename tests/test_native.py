@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.native import NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, SecurityAPIPrefix, Volume, load_library
+from xbox_media_drive.native import (NTFS_MNT_EXCLUSIVE, READ_ONLY_FLAGS, WINDOWS_CACHED, SecurityAPIPrefix, Volume,
+                                     journal_warning, load_library, open_journal_message)
 
 
 class FrozenLibraryTests(unittest.TestCase):
@@ -177,3 +178,138 @@ class VolumeDirtyTests(unittest.TestCase):
             volume.clear_dirty()
         self.assertEqual(volume.lib.ntfs_attr_close.call_count, 2)
         self.assertEqual(volume.lib.ntfs_inode_close.call_count, 2)
+
+
+LIBC = C.CDLL(None)
+LIBC.malloc.argtypes = [C.c_size_t]
+LIBC.malloc.restype = C.c_void_p
+
+
+class VolumeJournalTests(unittest.TestCase):
+    volume = VolumeDirtyTests.volume
+
+    def journal(self, checked=True, clean=True, version=(1, 1)):
+        """A volume whose library reports the given $LogFile state; returns it with the allocation and free mock."""
+        volume = self.volume()
+        header = None
+        if version:
+            header = LIBC.malloc(0x30)
+            C.memset(header, 0, 0x30)
+            C.memmove(header + 0x1a, version[1].to_bytes(2, "little", signed=True), 2)
+            C.memmove(header + 0x1c, version[0].to_bytes(2, "little", signed=True), 2)
+
+        def check(attr, restart):
+            if header:
+                restart._obj.value = header
+            return int(checked)
+
+        volume.lib.ntfs_check_logfile.side_effect = check
+        volume.lib.ntfs_is_logfile_clean.return_value = int(clean)
+        return volume, header
+
+    def state(self, volume, header):
+        libc = Mock()
+        with patch("xbox_media_drive.native.C.CDLL", return_value=libc):
+            state = volume.journal_state()
+        if header:
+            libc.free.assert_called_once()
+            self.assertEqual(libc.free.call_args.args[0].value, header)
+            LIBC.free(C.c_void_p(header))
+        else:
+            libc.free.assert_not_called()
+        volume.lib.ntfs_inode_open.assert_called_once_with(789, 2)
+        volume.lib.ntfs_attr_open.assert_called_once_with(123, 0x80, None, 0)
+        volume.lib.ntfs_attr_close.assert_called_once_with(456)
+        volume.lib.ntfs_inode_close.assert_called_once_with(123)
+        return state
+
+    def test_clean_journal(self):
+        self.assertEqual(self.state(*self.journal(version=(1, 1))), "clean")
+
+    def test_empty_journal_without_restart_page_is_clean(self):
+        volume, header = self.journal(version=None)
+        volume.lib.ntfs_check_logfile.side_effect = lambda attr, restart: 1
+        self.assertEqual(self.state(volume, header), "clean")
+
+    def test_unclean_journal_is_open(self):
+        self.assertEqual(self.state(*self.journal(clean=False)), "open")
+
+    def test_invalid_journal_is_open(self):
+        volume, header = self.journal(checked=False, version=None)
+        self.assertEqual(self.state(volume, header), "open")
+        volume.lib.ntfs_is_logfile_clean.assert_not_called()
+
+    def test_windows_cached_version_wins_over_clean_and_open(self):
+        for clean in (True, False):
+            with self.subTest(clean=clean):
+                self.assertEqual(self.state(*self.journal(clean=clean, version=(2, 0))), "windows-cached")
+
+    def test_other_versions_are_not_windows_cached(self):
+        for version in ((2, 1), (1, 0), (3, 0)):
+            with self.subTest(version=version):
+                self.assertEqual(self.state(*self.journal(version=version)), "clean")
+
+    def test_unreadable_journal_raises_and_closes_resources(self):
+        for failure in ("inode", "attribute", "close"):
+            with self.subTest(failure=failure):
+                volume = self.volume()
+                if failure == "inode":
+                    volume.lib.ntfs_inode_open.return_value = None
+                elif failure == "attribute":
+                    volume.lib.ntfs_attr_open.return_value = None
+                else:
+                    volume.lib.ntfs_inode_close.return_value = -1
+                    volume.lib.ntfs_is_logfile_clean.return_value = 1
+                with self.assertRaisesRegex(DriveError, "NTFS journal state"):
+                    volume.journal_state()
+                self.assertEqual(volume.lib.ntfs_inode_close.call_count, failure != "inode")
+
+
+class JournalMessageTests(unittest.TestCase):
+    def message(self, state, platform="linux", target="/test/partition"):
+        with patch("xbox_media_drive.native.sys.platform", platform):
+            return journal_warning(state, target)
+
+    def test_open_journal_warning_explains_the_consequences_and_remedies(self):
+        message = self.message("open")
+        self.assertIn("wasn't closed properly", message)
+        self.assertIn("NTFS journal is still open", message)
+        self.assertIn("removed without being closed", message)
+        self.assertIn("Linux refuses to mount the drive read-write", message)
+        self.assertIn("Mount and Open in Dolphin", message)
+        self.assertIn("marks the drive dirty", message)
+        self.assertIn("can't prepare it, restore its permissions or clear its dirty flag", message)
+        self.assertIn("To close the journal, do one of these:", message)
+        self.assertIn("Safely Remove Hardware", message)
+        self.assertIn("copy off anything you need before letting it repair", message)
+        self.assertIn("Run sudo ntfsfix -d /test/partition", message)
+        self.assertIn("Keep the -d", message)
+        self.assertNotIn("!", message)
+
+    def test_open_journal_warning_ntfsfix_wording_by_platform(self):
+        mac = self.message("open", platform="darwin")
+        self.assertIn("On a Linux computer", mac)
+        self.assertIn("sudo ntfsfix -d /dev/sdb1", mac)
+        self.assertNotIn("/test/partition", mac)
+
+    def test_windows_cached_warning(self):
+        message = self.message("windows-cached")
+        self.assertIn("Windows kept this drive's metadata cached (hibernation or Fast Startup)", message)
+        self.assertIn("Linux refuses to mount the drive read-write", message)
+        self.assertIn("hold Shift while choosing Shut down", message)
+        self.assertIn("copy off anything you need before letting it repair", message)
+        self.assertNotIn("ntfsfix", message)
+        self.assertNotIn("!", message)
+
+    def test_unknown_state_is_rejected(self):
+        with self.assertRaises(ValueError):
+            journal_warning("clean", "/test/partition")
+
+    def test_write_refusal_messages_are_unchanged_in_substance(self):
+        with patch("xbox_media_drive.native.sys.platform", "linux"):
+            refusal = open_journal_message("/test/partition")
+        self.assertIn("so NTFS-3G won't change it. No permissions changed.", refusal)
+        self.assertIn("To close the journal, do one of these:", refusal)
+        self.assertIn("Run sudo ntfsfix -d /test/partition", refusal)
+        self.assertIn("so NTFS-3G won't change it. No permissions changed.", WINDOWS_CACHED)
+        self.assertIn("hold Shift while choosing Shut down", WINDOWS_CACHED)

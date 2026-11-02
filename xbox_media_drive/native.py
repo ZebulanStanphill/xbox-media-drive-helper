@@ -24,26 +24,45 @@ READ_ONLY_FLAGS = NTFS_MNT_EXCLUSIVE | NTFS_MNT_RDONLY | NTFS_MNT_FORENSIC
 WINDOWS_REPAIR_WARNING = ("If Windows says there's a problem with the drive, copy off anything you need before letting "
                           "it repair the drive, then inspect permissions again: a repair can move files and reset their "
                           "permissions.")
+WINDOWS_CACHED_REMEDY = ("Connect the drive to the Windows PC it was last used on, then shut Windows down fully (hold Shift "
+                         "while choosing Shut down) or eject the drive with Safely Remove Hardware. "
+                         + WINDOWS_REPAIR_WARNING)
 WINDOWS_CACHED = ("Windows kept this drive's metadata cached (hibernation or Fast Startup), or lost the drive before "
-                  "closing it, so NTFS-3G won't change it. No permissions changed.\n\n"
-                  "Connect the drive to the Windows PC it was last used on, then shut Windows down fully (hold Shift "
-                  "while choosing Shut down) or eject the drive with Safely Remove Hardware. " + WINDOWS_REPAIR_WARNING)
+                  "closing it, so NTFS-3G won't change it. No permissions changed.\n\n" + WINDOWS_CACHED_REMEDY)
+JOURNAL_CONSEQUENCES = ("Until it is closed, Linux refuses to mount the drive read-write, and trying (for example Mount "
+                        "and Open in Dolphin or KDE's Disks & Devices) marks the drive dirty; and this app can't "
+                        "prepare it, restore its permissions or clear its dirty flag.")
 
 
-def open_journal_message(target):
+def close_journal_steps(target):
     if sys.platform.startswith("linux"):
         ntfsfix = "Run sudo ntfsfix -d {} (ntfsfix is in the ntfs-3g package).".format(target)
     else:
         ntfsfix = ("On a Linux computer, run sudo ntfsfix -d on the drive's NTFS partition, for example "
                    "sudo ntfsfix -d /dev/sdb1 (ntfsfix is in the ntfs-3g package).")
-    return ("The drive's NTFS journal is still open: an Xbox or Windows PC was using the drive and didn't close it, "
-            "so NTFS-3G won't change it. No permissions changed.\n\n"
-            "To close the journal, do one of these:\n"
+    return ("To close the journal, do one of these:\n"
             "- Connect the drive to a Windows PC, wait for it to appear, then eject it with Safely Remove Hardware. "
             + WINDOWS_REPAIR_WARNING + "\n"
             "- " + ntfsfix + "\n"
             "  This empties the journal, discarding any changes Windows hadn't finished writing. Keep the -d: "
             "without it, ntfsfix marks the drive for a Windows disk check, and Linux then refuses to mount it.")
+
+
+def open_journal_message(target):
+    return ("The drive's NTFS journal is still open: an Xbox or Windows PC was using the drive and didn't close it, "
+            "so NTFS-3G won't change it. No permissions changed.\n\n" + close_journal_steps(target))
+
+
+def journal_warning(state, target):
+    """Explain a drive whose journal isn't clean, found by inspection rather than by a refused write."""
+    if state == "open":
+        return ("This drive wasn't closed properly: its NTFS journal is still open, which happens when an Xbox or "
+                "Windows PC was using it and it was removed without being closed. " + JOURNAL_CONSEQUENCES + "\n\n"
+                + close_journal_steps(target))
+    if state == "windows-cached":
+        return ("Windows kept this drive's metadata cached (hibernation or Fast Startup), or lost the drive before "
+                "closing it. " + JOURNAL_CONSEQUENCES + "\n\n" + WINDOWS_CACHED_REMEDY)
+    raise ValueError("Unknown journal state {!r}".format(state))
 
 
 class SecurityAPIPrefix(C.Structure):
@@ -104,6 +123,10 @@ def load_library(explicit=None):
             lib.ntfs_attr_pwrite.restype = C.c_int64
             lib.ntfs_attr_close.argtypes = [C.c_void_p]
             lib.ntfs_attr_close.restype = None
+            lib.ntfs_check_logfile.argtypes = [C.c_void_p, C.POINTER(C.c_void_p)]
+            lib.ntfs_check_logfile.restype = C.c_int
+            lib.ntfs_is_logfile_clean.argtypes = [C.c_void_p, C.c_void_p]
+            lib.ntfs_is_logfile_clean.restype = C.c_int
             return lib
         except (OSError, AttributeError) as exc:
             errors.append(str(exc))
@@ -172,6 +195,40 @@ class Volume:
         # One direct write of the flags field: NTFS-3G's ntfs_volume_write_flags() masks
         # them with 0xc03f, dropping bits Windows sets. Unmount does not rewrite them.
         self._volume_flags(write=self._volume_flags() & ~1)
+
+    def journal_state(self):
+        """Report the $LogFile state as NTFS-3G's ntfs_volume_check_logfile() sees it, but read-only.
+
+        "clean", "open" (restart pages unclean or invalid; a writable session fails with EOPNOTSUPP) or
+        "windows-cached" (restart pages version 2.0, Windows-cached metadata; a writable session fails with EPERM).
+        """
+        inode = self.lib.ntfs_inode_open(self._volume_pointer(), 2)
+        if not inode:
+            raise DriveError("Cannot read the NTFS journal state: cannot open $LogFile.")
+        restart = C.c_void_p()
+        try:
+            attr = self.lib.ntfs_attr_open(inode, 0x80, None, 0)
+            if not attr:
+                raise DriveError("Cannot read the NTFS journal state: missing journal data.")
+            try:
+                clean = bool(self.lib.ntfs_check_logfile(attr, C.byref(restart))
+                             and self.lib.ntfs_is_logfile_clean(attr, restart))
+                state = "clean" if clean else "open"
+                if restart:
+                    # RESTART_PAGE_HEADER: minor_ver (s16) at 0x1a, major_ver (s16) at 0x1c.
+                    header = C.string_at(restart, 0x1e)
+                    if (int.from_bytes(header[0x1c:0x1e], "little", signed=True) == 2
+                            and int.from_bytes(header[0x1a:0x1c], "little", signed=True) == 0):
+                        state = "windows-cached"
+            finally:
+                self.lib.ntfs_attr_close(attr)
+                if restart:
+                    C.CDLL(None).free(restart)
+        finally:
+            closed = self.lib.ntfs_inode_close(inode)
+        if closed:
+            raise DriveError("Cannot close $LogFile after reading the NTFS journal state.")
+        return state
 
     def _volume_flags(self, write=None):
         """Read (or preserve) the on-disk u16 flags without volume struct offsets."""

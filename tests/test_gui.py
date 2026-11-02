@@ -23,6 +23,7 @@ except ImportError:
 
 from xbox_media_drive import DriveError, __version__
 from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
+from xbox_media_drive.native import journal_warning
 from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 
@@ -243,6 +244,47 @@ class GUITests(unittest.TestCase):
         self.window.invalidate()
         self.assertTrue(self.window.dirty_warning.isHidden())
         self.assertTrue(self.window.clear_dirty_button.isHidden())
+
+    def test_open_journal_warning_blocks_preparing_and_clearing_the_dirty_flag(self):
+        self.window.set_target("/tmp/volume.img")
+        result = {"ready": True, "changes_needed": 1, "objects": 1, "skipped_reparse_points": [], "blockers": [],
+                  "dirty": True, "journal": "clean", "identity": {"boot_sha256": "volume-id"}}
+        self.window.action = "inspect"
+        self.window.completed(result)
+        self.assertTrue(self.window.journal_warning.isHidden())
+        self.assertTrue(self.window.prepare_button.isEnabled())
+        self.assertFalse(self.window.clear_dirty_button.isHidden())
+        self.assertNotIn("journal", self.window.status.text())
+        for state in ("open", "windows-cached"):
+            with self.subTest(state=state):
+                self.window.completed(dict(result, journal=state))
+                self.assertFalse(self.window.journal_warning.isHidden())
+                self.assertEqual(self.window.journal_warning.text(), journal_warning(state, "/tmp/volume.img"))
+                self.assertFalse(self.window.dirty_warning.isHidden())
+                self.assertTrue(self.window.clear_dirty_button.isHidden())
+                self.assertFalse(self.window.prepare_button.isEnabled())
+                self.assertIn("Close the drive's NTFS journal before preparing it", self.window.status.text())
+                with patch.object(QFileDialog, "getSaveFileName") as chooser:
+                    self.window.prepare_volume()
+                chooser.assert_not_called()
+                self.window.invalidate()
+                self.assertTrue(self.window.journal_warning.isHidden())
+        self.window.completed(dict(result, journal="open"))
+        self.window.set_target("/tmp/another.img")
+        self.assertTrue(self.window.journal_warning.isHidden())
+        self.window.completed(dict(result, journal="open"))
+        self.window.completed(result)
+        self.assertTrue(self.window.journal_warning.isHidden())
+        self.assertTrue(self.window.prepare_button.isEnabled())
+
+    def test_inspection_without_a_journal_state_is_treated_as_clean(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "inspect"
+        self.window.completed({"ready": True, "changes_needed": 1, "objects": 1, "skipped_reparse_points": [],
+                               "blockers": [], "dirty": True, "identity": {"boot_sha256": "volume-id"}})
+        self.assertTrue(self.window.journal_warning.isHidden())
+        self.assertTrue(self.window.prepare_button.isEnabled())
+        self.assertFalse(self.window.clear_dirty_button.isHidden())
 
     def test_clear_dirty_requires_confirmation_and_runs_cli(self):
         self.window.set_target("/tmp/volume.img")

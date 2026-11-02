@@ -100,6 +100,23 @@ int xmd_fixture_open_journal(struct SECURITY_API *api)
     return result;
 }
 
+/* Overwrite the start of $LogFile's data, for example with a real drive's restart pages. */
+int xmd_fixture_logfile(struct SECURITY_API *api, const void *data, long length)
+{
+    ntfs_inode *inode = ntfs_inode_open(api->security.vol, FILE_LogFile);
+    if (!inode)
+        return -1;
+    ntfs_attr *attr = ntfs_attr_open(inode, AT_DATA, AT_UNNAMED, 0);
+    int result = -1;
+    if (attr) {
+        result = ntfs_attr_pwrite(attr, 0, length, data) == length ? 0 : -1;
+        ntfs_attr_close(attr);
+    }
+    if (ntfs_inode_close(inode))
+        result = -1;
+    return result;
+}
+
 int xmd_fixture_dirty(struct SECURITY_API *api)
 {
     ntfs_volume *vol = api->security.vol;

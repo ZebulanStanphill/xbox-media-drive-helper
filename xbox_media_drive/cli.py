@@ -8,7 +8,7 @@ from . import DriveError, __version__
 from .devices import discover, whole_disk, validate_whole_disk
 from .fsck import CHECK_PROBLEMS_NOTE, check_filesystem, find_ntfsck, is_bundled
 from .layout import analyze, read_head, restore_sector, switch
-from .native import load_library
+from .native import journal_warning, load_library
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, clear_dirty, inspect, journal_info, prepare, restore
 
 
@@ -134,6 +134,8 @@ def main(argv=None):
                 result = restore(args.target, args.backup, args.library, progress)
         if result.get("dirty") and not args.json:
             print(DIRTY_WARNING, file=sys.stderr)
+        if result.get("journal") not in (None, "clean") and not args.json:
+            print(journal_warning(result["journal"], args.target), file=sys.stderr)
         if result.get("verdict") == "problems" and not args.json:
             print(CHECK_PROBLEMS_NOTE, file=sys.stderr)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))

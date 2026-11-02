@@ -22,6 +22,7 @@ from . import DriveError, __version__, kde
 from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_access, system_environment, unmount,
                       whole_disk)
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
+from .native import journal_warning
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
 
 STYLE = """
@@ -395,6 +396,10 @@ class MainWindow(QMainWindow):
         self.status = label("Select a volume, then inspect its permissions.", "muted")
         self.status.setTextFormat(Qt.PlainText)
         prep.addWidget(self.status)
+        self.journal_warning = label("", "warning")
+        self.journal_warning.setTextFormat(Qt.PlainText)
+        self.journal_warning.hide()
+        prep.addWidget(self.journal_warning)
         self.dirty_warning = label(DIRTY_WARNING, "warning")
         self.dirty_warning.setTextFormat(Qt.PlainText)
         self.dirty_warning.hide()
@@ -567,6 +572,7 @@ class MainWindow(QMainWindow):
 
     def invalidate(self, *_):
         self.inspection = None
+        self.journal_warning.hide()
         self.dirty_warning.hide()
         self.clear_dirty_button.hide()
         self.prepare_button.setEnabled(False)
@@ -718,7 +724,7 @@ class MainWindow(QMainWindow):
                 "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"])
 
     def prepare_volume(self):
-        if not self.inspection or not self.inspection["ready"]:
+        if not self.inspection or not self.inspection["ready"] or self.inspection.get("journal", "clean") != "clean":
             return
         if self.offer_unmount(self.prepare_volume):
             return
@@ -920,9 +926,17 @@ class MainWindow(QMainWindow):
             self.followups.insert(0, lambda: self.start("list", listing=True, keep_inspection=True))
         elif self.action == "inspect":
             self.inspection = result
+            journal_state = result.get("journal", "clean")
+            journal_clean = journal_state == "clean"
+            if journal_clean:
+                self.journal_warning.hide()
+            else:
+                self.journal_warning.setText(journal_warning(journal_state, self.target_path))
+                self.journal_warning.show()
             self.dirty_warning.setVisible(bool(result.get("dirty")))
-            self.clear_dirty_button.setVisible(bool(result.get("dirty")))
-            self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0)
+            # Clearing the flag needs a writable session, which an open journal refuses.
+            self.clear_dirty_button.setVisible(bool(result.get("dirty")) and journal_clean)
+            self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0 and journal_clean)
             message = "{} objects inspected · {} need changes · {} reparse points skipped".format(
                 result["objects"], result["changes_needed"], len(result["skipped_reparse_points"]))
             if result["blockers"]:
@@ -932,6 +946,8 @@ class MainWindow(QMainWindow):
             if result.get("previously_prepared") and result["changes_needed"]:
                 message += ("\nThis drive was prepared before, but {} objects don't have app access yet — usually files "
                             "copied from a Mac or Linux PC, which don't inherit it. Prepare again to add it.").format(result["changes_needed"])
+            if not journal_clean:
+                message += "\nClose the drive's NTFS journal before preparing it (see below)."
             self.status.setText(message)
             self.log(message)
             QApplication.alert(self)

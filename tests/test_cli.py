@@ -7,6 +7,7 @@ from unittest.mock import patch
 from xbox_media_drive import DriveError
 from xbox_media_drive.cli import main
 from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
+from xbox_media_drive.native import journal_warning
 from xbox_media_drive.operations import DIRTY_WARNING
 
 
@@ -105,6 +106,22 @@ class CLITests(unittest.TestCase):
                         self.assertEqual(status, 0)
                         self.assertEqual(json.loads(output)["dirty"], dirty)
                         self.assertEqual(DIRTY_WARNING in error, dirty and not machine)
+
+    def test_journal_warning_for_inspection(self):
+        for journal in ("clean", "open", "windows-cached", None):
+            for machine in (False, True):
+                with self.subTest(journal=journal, json=machine):
+                    result = {"dirty": False, "ready": True}
+                    if journal:
+                        result["journal"] = journal
+                    with patch("xbox_media_drive.cli.inspect", return_value=result):
+                        status, output, error = self.call((["--json"] if machine else []) + ["inspect", "/dev/test"])
+                    self.assertEqual(status, 0)
+                    self.assertEqual(json.loads(output).get("journal"), journal)
+                    if journal in ("open", "windows-cached") and not machine:
+                        self.assertIn(journal_warning(journal, "/dev/test"), error)
+                    else:
+                        self.assertNotIn("journal", error)
 
     def test_json_listing(self):
         with patch("xbox_media_drive.cli.discover", return_value=[]):

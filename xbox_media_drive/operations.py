@@ -55,6 +55,7 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
     previously_prepared = False
     with volume_factory(target, library=library) as volume:
         dirty = volume.dirty()
+        journal_state = volume.journal_state()
         for entry in volume.walk():
             raw = volume.get(entry.path)
             total += 1
@@ -69,7 +70,7 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
                     blockers.append({"path": entry.path, "reason": str(exc)})
         skipped = volume.skipped
         system_skipped = getattr(volume, "system_skipped", [])
-    return {"target": target, "dirty": dirty, "identity": info, "objects": total, "directories": directories,
+    return {"target": target, "dirty": dirty, "journal": journal_state, "identity": info, "objects": total, "directories": directories,
             "changes_needed": changes, "previously_prepared": previously_prepared,
             "access": access, "blockers": blockers,
             "skipped_reparse_points": skipped, "skipped_system_paths": system_skipped, "ready": not blockers}
