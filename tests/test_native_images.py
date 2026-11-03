@@ -15,7 +15,7 @@ from pathlib import Path
 from xbox_media_drive import DriveError
 from xbox_media_drive.fsck import check_filesystem, find_ntfsck
 from xbox_media_drive.native import Volume
-from xbox_media_drive.operations import clear_dirty, inspect, prepare, restore
+from xbox_media_drive.operations import clear_dirty, empty_journal, inspect, prepare, restore
 from xbox_media_drive.security import AUTHENTICATED_USERS, Descriptor, MODIFY, acl_entries, signature
 from tests.test_security import ace, descriptor
 
@@ -170,6 +170,61 @@ class NativeImageTests(unittest.TestCase):
         before = hashlib.sha256(Path(self.image).read_bytes()).digest()
         self.assertEqual(self.journal_state(), "clean")
         self.assertEqual(self.inspect()["journal"], "clean")
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+
+    def closed_not_empty_pages(self):
+        """The Xbox restart pages as left by a proper close: RESTART_VOLUME_IS_CLEAN, but a client still listed."""
+        pages = bytearray(XBOX_RESTART_PAGES)
+        for page in (0, 4096):
+            self.assertEqual(struct.unpack_from("<H", pages, page + 48 + 0x0C), (0,))
+            struct.pack_into("<H", pages, page + 48 + 0x0E, 0x0002)
+        return bytes(pages)
+
+    def read_logfile(self):
+        with ImageVolume(self.image, library=self.library) as volume:
+            inode = volume.lib.ntfs_inode_open(volume._volume_pointer(), 2)
+            attr = volume.lib.ntfs_attr_open(inode, 0x80, None, 0)
+            data, position, buffer = bytearray(), 0, C.create_string_buffer(1 << 20)
+            while True:
+                count = volume.lib.ntfs_attr_pread(attr, position, len(buffer), buffer)
+                self.assertGreaterEqual(count, 0)
+                if not count:
+                    break
+                data += buffer.raw[:count]
+                position += count
+            volume.lib.ntfs_attr_close(attr)
+            volume.lib.ntfs_inode_close(inode)
+        return bytes(data)
+
+    def test_fresh_image_journal_is_empty(self):
+        info = self.inspect()
+        self.assertEqual((info["journal"], info["journal_empty"]), ("clean", True))
+
+    def test_closed_but_not_empty_journal_is_emptied_and_verified(self):
+        self.write_logfile(self.closed_not_empty_pages())
+        info = self.inspect()
+        self.assertEqual((info["journal"], info["journal_empty"]), ("clean", False))
+        self.assertNotEqual(self.read_logfile(), b"\xff" * len(self.read_logfile()))
+        result = empty_journal(self.image, library=self.library, volume_factory=ImageVolume)
+        self.assertEqual(result, {"target": os.path.realpath(self.image), "emptied": True,
+                                  "journal": "clean", "journal_empty": True})
+        logfile = self.read_logfile()
+        self.assertTrue(logfile)
+        self.assertEqual(logfile.count(b"\xff"), len(logfile))
+        info = self.inspect()
+        self.assertEqual((info["journal"], info["journal_empty"]), ("clean", True))
+        self.assertTrue(info["ready"])
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        self.assertFalse(empty_journal(self.image, library=self.library, volume_factory=ImageVolume)["emptied"])
+        self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
+        for path in ("/movie.mkv", "/Media/nested.mkv"):
+            self.assertEqual(self.tool("ntfscat", self.image, path), self.payload)
+
+    def test_empty_journal_refuses_an_open_journal_without_changes(self):
+        self.write_logfile(XBOX_RESTART_PAGES)
+        before = hashlib.sha256(Path(self.image).read_bytes()).digest()
+        with self.assertRaisesRegex(DriveError, "NTFS journal is still open"):
+            empty_journal(self.image, library=self.library, volume_factory=ImageVolume)
         self.assertEqual(hashlib.sha256(Path(self.image).read_bytes()).digest(), before)
 
     def test_zeroed_restart_page_is_an_open_journal(self):

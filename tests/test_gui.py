@@ -24,7 +24,7 @@ except ImportError:
 from xbox_media_drive import DriveError, __version__
 from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
 from xbox_media_drive.native import journal_warning
-from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
+from xbox_media_drive.operations import CLEAR_DIRTY_CONFIRMATION, EMPTY_JOURNAL_CONFIRMATION, DIRTY_WARNING
 
 
 @unittest.skipUnless(HAS_QT, "Install the gui extra to test the desktop interface")
@@ -350,6 +350,95 @@ class GUITests(unittest.TestCase):
             worker.return_value.start.assert_called_once_with()
             self.window.finished()
         self.assertTrue(self.window.clear_dirty_button.isEnabled())
+
+    def inspect_with_journal(self, **fields):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "inspect"
+        self.window.completed(dict({"ready": True, "changes_needed": 1, "objects": 1, "skipped_reparse_points": [],
+                                    "blockers": [], "dirty": False, "identity": {"boot_sha256": "volume-id"}}, **fields))
+
+    def test_empty_journal_button_and_note_only_for_a_closed_but_not_empty_journal(self):
+        for fields, shown in (({"journal": "clean", "journal_empty": False}, True),
+                              ({"journal": "clean", "journal_empty": True}, False),
+                              ({"journal": "clean"}, False),
+                              ({}, False),
+                              ({"journal": "open", "journal_empty": False}, False),
+                              ({"journal": "windows-cached", "journal_empty": False}, False)):
+            with self.subTest(fields=fields):
+                self.inspect_with_journal(**fields)
+                self.assertEqual(not self.window.empty_journal_button.isHidden(), shown)
+                self.assertEqual(not self.window.journal_note.isHidden(), shown)
+                self.assertEqual(self.window.journal_note.objectName(), "muted")
+                self.window.invalidate()
+                self.assertTrue(self.window.empty_journal_button.isHidden())
+                self.assertTrue(self.window.journal_note.isHidden())
+        self.inspect_with_journal(journal="clean", journal_empty=False)
+        self.assertIn("Empty Journal", self.window.journal_note.text())
+        self.window.set_target("/tmp/another.img")
+        self.assertTrue(self.window.empty_journal_button.isHidden())
+
+    def test_empty_journal_requires_confirmation_and_runs_cli(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.library.setText("/tmp/libntfs.dylib")
+        self.window.inspection = {"journal": "clean", "journal_empty": False, "identity": {"boot_sha256": "volume-id"}}
+        for answer in (QMessageBox.No, QMessageBox.Yes):
+            with self.subTest(answer=answer), patch("xbox_media_drive.gui.is_mounted", return_value=False), \
+                    patch.object(QMessageBox, "question", return_value=answer) as question, \
+                    patch.object(self.window, "start") as start:
+                self.window.empty_journal_volume()
+                self.assertIn(EMPTY_JOURNAL_CONFIRMATION, question.call_args.args[2])
+                self.assertIn("/tmp/volume.img", question.call_args.args[2])
+                if answer == QMessageBox.Yes:
+                    start.assert_called_once_with("empty-journal", ["--library", "/tmp/libntfs.dylib",
+                                                                   "empty-journal", "/tmp/volume.img",
+                                                                   "--expect-volume", "volume-id", "--yes"])
+                else:
+                    start.assert_not_called()
+        for inspection in (None, {"journal": "clean", "journal_empty": True}, {"journal": "open", "journal_empty": False},
+                           {"journal": "clean"}):
+            self.window.inspection = inspection
+            with patch.object(QMessageBox, "question") as question:
+                self.window.empty_journal_volume()
+            question.assert_not_called()
+
+    def test_empty_journal_success_keeps_the_inspection_without_inspecting_again(self):
+        self.inspect_with_journal(journal="clean", journal_empty=False)
+        self.window.action = "empty-journal"
+        self.window.completed({"target": "/tmp/volume.img", "emptied": True, "journal": "clean", "journal_empty": True})
+        self.assertTrue(self.window.inspection["journal_empty"])
+        self.assertEqual(self.window.inspection["identity"], {"boot_sha256": "volume-id"})
+        self.assertTrue(self.window.empty_journal_button.isHidden())
+        self.assertTrue(self.window.journal_note.isHidden())
+        self.assertEqual(len(self.window.followups), 1)
+        shown = []
+        with patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))):
+            self.window.followups.pop(0)()
+        self.assertEqual(shown[0][0], "Journal emptied")
+        self.assertIn("/tmp/volume.img is now empty", shown[0][1])
+        self.assertIn("mount the drive read-write", shown[0][1])
+        self.assertNotIn("inspect", shown[0][1])
+        self.assertEqual(self.window.followups, [])
+
+    def test_empty_journal_when_already_empty_says_nothing_changed(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.action = "empty-journal"
+        self.window.completed({"target": "/tmp/volume.img", "emptied": False, "journal": "clean", "journal_empty": True})
+        shown = []
+        with patch.object(QMessageBox, "exec", lambda box: shown.append((box.text(), box.informativeText()))):
+            self.window.followups.pop(0)()
+        self.assertEqual(shown[0][0], "Journal already empty")
+        self.assertIn("nothing changed", shown[0][1])
+        self.assertEqual(self.window.followups, [])
+
+    def test_empty_journal_button_disabled_while_worker_runs(self):
+        self.window.set_target("/tmp/volume.img")
+        self.window.empty_journal_button.show()
+        with patch("xbox_media_drive.gui.Worker"):
+            self.window.start("empty-journal", ["empty-journal", "/tmp/volume.img", "--yes"])
+            self.assertFalse(self.window.empty_journal_button.isEnabled())
+            self.assertIn("Emptying the NTFS journal on /tmp/volume.img", self.window.busy.text())
+            self.window.finished()
+        self.assertTrue(self.window.empty_journal_button.isEnabled())
 
     def test_check_filesystem_button_only_where_ntfsck_is_installed(self):
         self.assertTrue(self.window.check_filesystem_button.isHidden())

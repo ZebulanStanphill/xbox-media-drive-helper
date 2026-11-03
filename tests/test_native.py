@@ -265,6 +265,90 @@ class VolumeJournalTests(unittest.TestCase):
                 self.assertEqual(volume.lib.ntfs_inode_close.call_count, failure != "inode")
 
 
+class VolumeEmptyJournalTests(unittest.TestCase):
+    def volume(self, writable=True, state="clean", empty=False, content=b"\xff" * 2500000):
+        volume = VolumeDirtyTests.volume(self)
+        volume.writable = writable
+        volume.journal_status = Mock(return_value={"state": state, "empty": empty})
+        volume.lib.ntfs_logfile_reset.return_value = 0
+        self.data = bytearray(content)
+
+        def read(attr, offset, count, buffer):
+            chunk = bytes(self.data[offset:offset + count])
+            C.memmove(buffer, chunk, len(chunk))
+            return len(chunk)
+
+        volume.lib.ntfs_attr_pread.side_effect = read
+        return volume
+
+    def test_empties_verifies_and_closes_resources(self):
+        volume = self.volume()
+        self.assertTrue(volume.empty_journal())
+        volume.lib.ntfs_logfile_reset.assert_called_once_with(789)
+        self.assertEqual(volume.lib.ntfs_attr_pread.call_count, 4)
+        volume.lib.ntfs_attr_open.assert_called_once_with(123, 0x80, None, 0)
+        volume.lib.ntfs_attr_close.assert_called_once_with(456)
+        volume.lib.ntfs_inode_close.assert_called_once_with(123)
+
+    def test_read_only_session_refused(self):
+        volume = self.volume(writable=False)
+        with self.assertRaisesRegex(DriveError, "read-only"):
+            volume.empty_journal()
+        volume.lib.ntfs_logfile_reset.assert_not_called()
+
+    def test_journal_that_is_not_clean_refused(self):
+        for state in ("open", "windows-cached"):
+            with self.subTest(state=state):
+                volume = self.volume(state=state)
+                with self.assertRaisesRegex(DriveError, "isn't clean.*Nothing changed"):
+                    volume.empty_journal()
+                volume.lib.ntfs_logfile_reset.assert_not_called()
+
+    def test_already_empty_journal_writes_nothing(self):
+        volume = self.volume(empty=True)
+        self.assertFalse(volume.empty_journal())
+        volume.lib.ntfs_logfile_reset.assert_not_called()
+
+    def test_reset_failure(self):
+        volume = self.volume()
+        volume.lib.ntfs_logfile_reset.return_value = -1
+        with patch("xbox_media_drive.native.C.get_errno", return_value=errno.EIO):
+            with self.assertRaisesRegex(DriveError, "could not empty the journal"):
+                volume.empty_journal()
+        volume.lib.ntfs_attr_pread.assert_not_called()
+
+    def test_verification_failure_closes_resources(self):
+        for content in (b"\xff" * 1500000 + b"R" + b"\xff" * 1000, b""):
+            with self.subTest(size=len(content)):
+                volume = self.volume(content=content)
+                with self.assertRaisesRegex(DriveError, "verification|no data"):
+                    volume.empty_journal()
+                volume.lib.ntfs_attr_close.assert_called_once_with(456)
+                volume.lib.ntfs_inode_close.assert_called_once_with(123)
+
+    def test_read_error_during_verification(self):
+        volume = self.volume()
+        volume.lib.ntfs_attr_pread.side_effect = None
+        volume.lib.ntfs_attr_pread.return_value = -1
+        with self.assertRaisesRegex(DriveError, "read failed"):
+            volume.empty_journal()
+
+    def test_status_reports_emptiness_only_for_a_clean_journal_without_restart_pages(self):
+        helper = VolumeJournalTests()
+        for version, clean, checked, expected in ((None, True, True, True), ((1, 1), True, True, False),
+                                                  (None, False, False, False)):
+            with self.subTest(version=version, clean=clean):
+                volume, header = helper.journal(checked=checked, clean=clean, version=version)
+                if version is None:
+                    volume.lib.ntfs_check_logfile.side_effect = lambda attr, restart, c=checked: int(c)
+                libc = Mock()
+                with patch("xbox_media_drive.native.C.CDLL", return_value=libc):
+                    status = volume.journal_status()
+                if header:
+                    LIBC.free(C.c_void_p(header))
+                self.assertEqual(status["empty"], expected)
+
+
 class JournalMessageTests(unittest.TestCase):
     def message(self, state, platform="linux", target="/test/partition"):
         with patch("xbox_media_drive.native.sys.platform", platform):

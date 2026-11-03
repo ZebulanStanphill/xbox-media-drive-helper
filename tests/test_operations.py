@@ -10,7 +10,7 @@ from unittest.mock import patch
 from xbox_media_drive import DriveError
 from xbox_media_drive.devices import identity
 from xbox_media_drive.native import Entry
-from xbox_media_drive.operations import clear_dirty, inspect, journal, journal_info, prepare, put_meta, restore
+from xbox_media_drive.operations import clear_dirty, empty_journal, inspect, journal, journal_info, prepare, put_meta, restore
 from xbox_media_drive.security import APP_PACKAGES, MODIFY, grant, signature
 from tests.test_security import ace, descriptor
 
@@ -36,6 +36,7 @@ class MemoryVolume:
         self.skipped = []
         self.is_dirty = False
         self.journal = "clean"
+        self.journal_is_empty = False
 
     def __call__(self, *args, **kwargs):
         return self
@@ -51,6 +52,14 @@ class MemoryVolume:
 
     def journal_state(self):
         return self.journal
+
+    def journal_status(self):
+        return {"state": self.journal, "empty": self.journal == "clean" and self.journal_is_empty}
+
+    def empty_journal(self):
+        emptied = not self.journal_is_empty
+        self.journal_is_empty = True
+        return emptied
 
     def walk(self):
         for path, (ref, directory, raw) in self.files.items():
@@ -126,6 +135,33 @@ class OperationTests(unittest.TestCase):
         with patch.object(self.volume, "clear_dirty", create=True):
             with self.assertRaisesRegex(DriveError, "verification failed"):
                 clear_dirty(self.target, volume_factory=self.volume)
+
+    def test_inspect_reports_whether_the_journal_is_empty(self):
+        self.assertFalse(inspect(self.target, volume_factory=self.volume)["journal_empty"])
+        self.volume.journal_is_empty = True
+        self.assertTrue(inspect(self.target, volume_factory=self.volume)["journal_empty"])
+        self.volume.journal = "open"
+        self.assertFalse(inspect(self.target, volume_factory=self.volume)["journal_empty"])
+
+    def test_empty_journal_result_shape_and_idempotence(self):
+        self.assertEqual(empty_journal(self.target, volume_factory=self.volume),
+                         {"target": self.target, "emptied": True, "journal": "clean", "journal_empty": True})
+        self.assertTrue(self.volume.journal_is_empty)
+        self.assertFalse(empty_journal(self.target, volume_factory=self.volume)["emptied"])
+        self.assertEqual(self.volume.writes, 0)
+
+    def test_empty_journal_expected_volume(self):
+        info = identity(self.target)
+        result = empty_journal(self.target, volume_factory=self.volume, expected_boot=info["boot_sha256"])
+        self.assertEqual(result, {"target": self.target, "emptied": True, "journal": "clean",
+                                  "journal_empty": True, "identity": info})
+
+    def test_empty_journal_wrong_volume_writes_nothing(self):
+        with patch.object(self.volume, "empty_journal", create=True) as write:
+            with self.assertRaisesRegex(DriveError, "no longer matches.*before emptying the journal"):
+                empty_journal(self.target, volume_factory=self.volume, expected_boot="wrong-volume")
+            write.assert_not_called()
+        self.assertFalse(self.volume.journal_is_empty)
 
     def test_dirty_flag_warns_without_blocking_operations(self):
         self.assertFalse(inspect(self.target, volume_factory=self.volume)["dirty"])

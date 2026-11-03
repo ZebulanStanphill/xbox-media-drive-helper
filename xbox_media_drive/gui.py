@@ -23,7 +23,7 @@ from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_acces
                       whole_disk)
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
 from .native import journal_warning
-from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING
+from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, EMPTY_JOURNAL_CONFIRMATION
 
 STYLE = """
 QWidget { background: #101613; color: #e7eee8; font-size: 13px; }
@@ -105,6 +105,10 @@ def configure(app):
 SOURCE_URL = "https://github.com/ZebulanStanphill/xbox-media-drive-helper"
 LICENSE_URL = "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"
 PRIVACY_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
+
+JOURNAL_NOTE = ("This drive's NTFS journal is closed but not empty. If Linux won't mount it (\"failed to replay "
+                "log file\"), use Empty Journal. It discards nothing.")
 
 
 def label(text, name=None):
@@ -408,6 +412,14 @@ class MainWindow(QMainWindow):
         self.clear_dirty_button.hide()
         self.clear_dirty_button.clicked.connect(self.clear_dirty_volume)
         prep.addWidget(self.clear_dirty_button)
+        self.journal_note = label(JOURNAL_NOTE, "muted")
+        self.journal_note.setTextFormat(Qt.PlainText)
+        self.journal_note.hide()
+        prep.addWidget(self.journal_note)
+        self.empty_journal_button = QPushButton("Empty Journal…")
+        self.empty_journal_button.hide()
+        self.empty_journal_button.clicked.connect(self.empty_journal_volume)
+        prep.addWidget(self.empty_journal_button)
         self.prepare_button = QPushButton("Prepare for Xbox…")
         self.prepare_button.setObjectName("primary")
         self.prepare_button.setEnabled(False)
@@ -506,6 +518,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
         self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
                          self.tabs, self.library, self.check_filesystem_button, self.clear_dirty_button,
+                         self.empty_journal_button,
                          self.check_mode_button, self.switch_mode_button, self.restore_sector_button]
         self.check_disk_access()
         QGuiApplication.instance().applicationStateChanged.connect(self.application_state_changed)
@@ -575,6 +588,8 @@ class MainWindow(QMainWindow):
         self.journal_warning.hide()
         self.dirty_warning.hide()
         self.clear_dirty_button.hide()
+        self.journal_note.hide()
+        self.empty_journal_button.hide()
         self.prepare_button.setEnabled(False)
         self.status.setText("Inspect this volume before preparing it." if self.target_path else
                             "Select a volume, then inspect its permissions.")
@@ -721,6 +736,20 @@ class MainWindow(QMainWindow):
         default = QMessageBox.No if check and not check["clean"] else QMessageBox.NoButton
         if QMessageBox.question(self, "Clear Dirty Flag", message, QMessageBox.Yes | QMessageBox.No, default) == QMessageBox.Yes:
             self.start("clear-dirty", self.arguments("clear-dirty") + [
+                "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"])
+
+    def journal_emptiable(self):
+        inspection = self.inspection or {}
+        return inspection.get("journal") == "clean" and inspection.get("journal_empty") is False
+
+    def empty_journal_volume(self):
+        if not self.journal_emptiable():
+            return
+        if self.offer_unmount(self.empty_journal_volume):
+            return
+        message = "Empty the NTFS journal on {}?\n\n{}".format(self.target_path, EMPTY_JOURNAL_CONFIRMATION)
+        if QMessageBox.question(self, "Empty Journal", message, QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            self.start("empty-journal", self.arguments("empty-journal") + [
                 "--expect-volume", self.inspection["identity"]["boot_sha256"], "--yes"])
 
     def prepare_volume(self):
@@ -874,7 +903,8 @@ class MainWindow(QMainWindow):
         else:
             text = "{} {}… Enter your administrator password if asked.".format(
                 {"inspect": "Inspecting permissions on", "prepare": "Preparing", "restore": "Restoring permissions on",
-                 "clear-dirty": "Clearing the NTFS dirty flag on", "check": "Checking the filesystem on"}[action],
+                 "clear-dirty": "Clearing the NTFS dirty flag on",
+                 "empty-journal": "Emptying the NTFS journal on", "check": "Checking the filesystem on"}[action],
                 self.target_path)
         self.log(text)
         self.busy.setText(text)
@@ -936,6 +966,9 @@ class MainWindow(QMainWindow):
             self.dirty_warning.setVisible(bool(result.get("dirty")))
             # Clearing the flag needs a writable session, which an open journal refuses.
             self.clear_dirty_button.setVisible(bool(result.get("dirty")) and journal_clean)
+            emptiable = self.journal_emptiable()
+            self.journal_note.setVisible(emptiable)
+            self.empty_journal_button.setVisible(emptiable)
             self.prepare_button.setEnabled(result["ready"] and result["changes_needed"] > 0 and journal_clean)
             message = "{} objects inspected · {} need changes · {} reparse points skipped".format(
                 result["objects"], result["changes_needed"], len(result["skipped_reparse_points"]))
@@ -981,6 +1014,20 @@ class MainWindow(QMainWindow):
             else:
                 self.report(QMessageBox.Information, "Dirty flag already clear",
                             "The NTFS dirty flag on {} was already clear, so nothing changed.".format(self.target_path))
+        elif self.action == "empty-journal":
+            # Emptying changes only the journal, so the inspection still describes the drive.
+            if self.inspection:
+                self.inspection["journal_empty"] = True
+            self.journal_note.hide()
+            self.empty_journal_button.hide()
+            self.log("NTFS journal emptied." if result["emptied"] else "NTFS journal was already empty.")
+            if result["emptied"]:
+                self.report(QMessageBox.Information, "Journal emptied",
+                            "The NTFS journal on {} is now empty, and reading it back from the drive confirmed it. "
+                            "Linux should now mount the drive read-write. Nothing else on the drive changed.".format(self.target_path))
+            else:
+                self.report(QMessageBox.Information, "Journal already empty",
+                            "The NTFS journal on {} was already empty, so nothing changed.".format(self.target_path))
         elif self.action == "check-mode":
             self.disk_layout = result
             description = {"game": "Game mode (Xbox signature)", "media": "Media / PC mode (standard signature)"}.get(

@@ -9,7 +9,11 @@ from .devices import discover, whole_disk, validate_whole_disk
 from .fsck import CHECK_PROBLEMS_NOTE, check_filesystem, find_ntfsck, is_bundled
 from .layout import analyze, read_head, restore_sector, switch
 from .native import journal_warning, load_library
-from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, clear_dirty, inspect, journal_info, prepare, restore
+from .operations import (CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, EMPTY_JOURNAL_CONFIRMATION, clear_dirty, empty_journal,
+                         inspect, journal_info, prepare, restore)
+
+JOURNAL_NOT_EMPTY_NOTE = ("The NTFS journal is closed but not empty. If Linux refuses to mount the drive read-write "
+                          "(\"failed to replay log file\"), run empty-journal on it; that discards nothing.")
 
 
 def parser():
@@ -37,6 +41,10 @@ def parser():
     clear.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
     clear.add_argument("--expect-volume", help="Require this boot_sha256 from a previous inspection")
     clear.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
+    empty = sub.add_parser("empty-journal", help="Empty a cleanly closed NTFS journal so Linux's ntfs3 driver can mount the drive")
+    empty.add_argument("target", help="Unmounted external NTFS partition or raw NTFS volume image")
+    empty.add_argument("--expect-volume", help="Require this boot_sha256 from a previous inspection")
+    empty.add_argument("--yes", action="store_true", help="Confirm the displayed target noninteractively")
     for command in ("inspect", "prepare", "restore"):
         cmd = sub.add_parser(command, help={"inspect": "Read-only permission preflight",
                                            "prepare": "Grant Xbox app permissions with a recovery journal",
@@ -106,6 +114,16 @@ def main(argv=None):
                 if input() != args.target:
                     raise DriveError("Confirmation did not match; no changes made.")
             result = clear_dirty(args.target, args.library, expected_boot=args.expect_volume)
+        elif args.command == "empty-journal":
+            print(EMPTY_JOURNAL_CONFIRMATION, file=sys.stderr)
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise DriveError("Pass --yes after checking the target with inspect.")
+                print("Type the complete target path {} to confirm: ".format(args.target),
+                      end="", file=sys.stderr, flush=True)
+                if input() != args.target:
+                    raise DriveError("Confirmation did not match; no changes made.")
+            result = empty_journal(args.target, args.library, expected_boot=args.expect_volume)
         else:
             if args.command in ("prepare", "restore") and not args.yes:
                 if not sys.stdin.isatty():
@@ -136,6 +154,9 @@ def main(argv=None):
             print(DIRTY_WARNING, file=sys.stderr)
         if result.get("journal") not in (None, "clean") and not args.json:
             print(journal_warning(result["journal"], args.target), file=sys.stderr)
+        if (args.command == "inspect" and result.get("journal") == "clean" and result.get("journal_empty") is False
+                and not args.json):
+            print(JOURNAL_NOT_EMPTY_NOTE, file=sys.stderr)
         if result.get("verdict") == "problems" and not args.json:
             print(CHECK_PROBLEMS_NOTE, file=sys.stderr)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))

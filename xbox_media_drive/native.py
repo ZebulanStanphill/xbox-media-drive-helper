@@ -127,6 +127,8 @@ def load_library(explicit=None):
             lib.ntfs_check_logfile.restype = C.c_int
             lib.ntfs_is_logfile_clean.argtypes = [C.c_void_p, C.c_void_p]
             lib.ntfs_is_logfile_clean.restype = C.c_int
+            lib.ntfs_logfile_reset.argtypes = [C.c_void_p]
+            lib.ntfs_logfile_reset.restype = C.c_int
             return lib
         except (OSError, AttributeError) as exc:
             errors.append(str(exc))
@@ -197,23 +199,31 @@ class Volume:
         self._volume_flags(write=self._volume_flags() & ~1)
 
     def journal_state(self):
+        """The $LogFile state alone: "clean", "open" or "windows-cached". See journal_status()."""
+        return self.journal_status()["state"]
+
+    def journal_status(self):
         """Report the $LogFile state as NTFS-3G's ntfs_volume_check_logfile() sees it, but read-only.
 
-        "clean", "open" (restart pages unclean or invalid; a writable session fails with EOPNOTSUPP) or
-        "windows-cached" (restart pages version 2.0, Windows-cached metadata; a writable session fails with EPERM).
+        {"state": ..., "empty": ...}. The state is "clean", "open" (restart pages unclean or invalid; a writable
+        session fails with EOPNOTSUPP) or "windows-cached" (restart pages version 2.0, Windows-cached metadata; a
+        writable session fails with EPERM). "empty" is True only for a clean journal that is all 0xFF, which
+        ntfs_check_logfile() reports as success without restart pages.
         """
         inode = self.lib.ntfs_inode_open(self._volume_pointer(), 2)
         if not inode:
             raise DriveError("Cannot read the NTFS journal state: cannot open $LogFile.")
         restart = C.c_void_p()
+        empty = False
         try:
             attr = self.lib.ntfs_attr_open(inode, 0x80, None, 0)
             if not attr:
                 raise DriveError("Cannot read the NTFS journal state: missing journal data.")
             try:
-                clean = bool(self.lib.ntfs_check_logfile(attr, C.byref(restart))
-                             and self.lib.ntfs_is_logfile_clean(attr, restart))
+                checked = bool(self.lib.ntfs_check_logfile(attr, C.byref(restart)))
+                clean = bool(checked and self.lib.ntfs_is_logfile_clean(attr, restart))
                 state = "clean" if clean else "open"
+                empty = clean and not restart
                 if restart:
                     # RESTART_PAGE_HEADER: minor_ver (s16) at 0x1a, major_ver (s16) at 0x1c.
                     header = C.string_at(restart, 0x1e)
@@ -228,7 +238,55 @@ class Volume:
             closed = self.lib.ntfs_inode_close(inode)
         if closed:
             raise DriveError("Cannot close $LogFile after reading the NTFS journal state.")
-        return state
+        return {"state": state, "empty": state == "clean" and empty}
+
+    def empty_journal(self):
+        """Fill a clean $LogFile with 0xFF so ntfs3 treats it like a new volume's. True if it wrote, False if empty.
+
+        Lossless only because a clean journal has no unfinished transactions; anything else is refused.
+        """
+        if not self.writable:
+            raise DriveError("Refusing to write through a read-only session.")
+        status = self.journal_status()
+        if status["state"] != "clean":
+            raise DriveError("The NTFS journal isn't clean, and emptying it would discard changes Windows hadn't "
+                             "finished writing. Nothing changed.")
+        if status["empty"]:
+            return False
+        if self.lib.ntfs_logfile_reset(self._volume_pointer()):
+            raise DriveError("NTFS-3G could not empty the journal ({}).".format(os.strerror(C.get_errno())))
+        self._verify_journal_empty()
+        return True
+
+    def _verify_journal_empty(self, chunk=1 << 20):
+        # ntfs_check_logfile() trusts NTFS-3G's in-memory "empty" flag after a reset, so read the bytes back.
+        inode = self.lib.ntfs_inode_open(self._volume_pointer(), 2)
+        if not inode:
+            raise DriveError("Cannot verify the emptied NTFS journal: cannot open $LogFile.")
+        try:
+            attr = self.lib.ntfs_attr_open(inode, 0x80, None, 0)
+            if not attr:
+                raise DriveError("Cannot verify the emptied NTFS journal: missing journal data.")
+            try:
+                buffer = C.create_string_buffer(chunk)
+                position = 0
+                while True:
+                    count = self.lib.ntfs_attr_pread(attr, position, chunk, buffer)
+                    if count < 0:
+                        raise DriveError("Cannot verify the emptied NTFS journal: read failed.")
+                    if count == 0:
+                        break
+                    if buffer.raw[:count].count(b"\xff") != count:
+                        raise DriveError("NTFS journal verification failed: the journal isn't empty.")
+                    position += count
+                if position == 0:
+                    raise DriveError("Cannot verify the emptied NTFS journal: the journal has no data.")
+            finally:
+                self.lib.ntfs_attr_close(attr)
+        finally:
+            closed = self.lib.ntfs_inode_close(inode)
+        if closed:
+            raise DriveError("Cannot close $LogFile after verifying the emptied NTFS journal.")
 
     def _volume_flags(self, write=None):
         """Read (or preserve) the on-disk u16 flags without volume struct offsets."""

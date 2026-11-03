@@ -28,6 +28,12 @@ CLEAR_DIRTY_CONFIRMATION = ("Clearing the dirty flag hides whatever Windows was 
                             "This clears only the dirty flag; it doesn't reset the journal or repair anything.")
 
 
+EMPTY_JOURNAL_CONFIRMATION = ("This drive's NTFS journal is marked clean, so emptying it discards nothing. Linux's ntfs3 "
+                              "driver can still refuse to mount a drive with such a journal (\"failed to replay log "
+                              "file\"), and starts a fresh journal when it is empty; Windows and the Xbox also start a "
+                              "fresh one. Nothing else on the drive changes.")
+
+
 def clear_dirty(target, library=None, volume_factory=Volume, expected_boot=None):
     target = validate_target(target)
     info = None
@@ -47,6 +53,21 @@ def clear_dirty(target, library=None, volume_factory=Volume, expected_boot=None)
     return result
 
 
+def empty_journal(target, library=None, volume_factory=Volume, expected_boot=None):
+    target = validate_target(target)
+    info = None
+    if expected_boot is not None:
+        info = identity(target)
+        if info["boot_sha256"] != expected_boot:
+            raise DriveError("The selected volume no longer matches the inspection. Inspect the drive again before emptying the journal.")
+    with volume_factory(target, writable=True, library=library) as volume:
+        emptied = volume.empty_journal()
+    result = {"target": target, "emptied": emptied, "journal": "clean", "journal_empty": True}
+    if info is not None:
+        result["identity"] = info
+    return result
+
+
 def inspect(target, access="modify", library=None, volume_factory=Volume):
     target = validate_target(target)
     info = identity(target)
@@ -55,7 +76,8 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
     previously_prepared = False
     with volume_factory(target, library=library) as volume:
         dirty = volume.dirty()
-        journal_state = volume.journal_state()
+        journal_status = volume.journal_status()
+        journal_state = journal_status["state"]
         for entry in volume.walk():
             raw = volume.get(entry.path)
             total += 1
@@ -70,7 +92,8 @@ def inspect(target, access="modify", library=None, volume_factory=Volume):
                     blockers.append({"path": entry.path, "reason": str(exc)})
         skipped = volume.skipped
         system_skipped = getattr(volume, "system_skipped", [])
-    return {"target": target, "dirty": dirty, "journal": journal_state, "identity": info, "objects": total, "directories": directories,
+    return {"target": target, "dirty": dirty, "journal": journal_state,
+            "journal_empty": journal_state == "clean" and bool(journal_status["empty"]), "identity": info, "objects": total, "directories": directories,
             "changes_needed": changes, "previously_prepared": previously_prepared,
             "access": access, "blockers": blockers,
             "skipped_reparse_points": skipped, "skipped_system_paths": system_skipped, "ready": not blockers}

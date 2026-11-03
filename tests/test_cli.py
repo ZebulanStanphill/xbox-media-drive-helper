@@ -5,10 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from xbox_media_drive import DriveError
-from xbox_media_drive.cli import main
+from xbox_media_drive.cli import JOURNAL_NOT_EMPTY_NOTE, main
 from xbox_media_drive.fsck import CHECK_PROBLEMS_NOTE
 from xbox_media_drive.native import journal_warning
-from xbox_media_drive.operations import DIRTY_WARNING
+from xbox_media_drive.operations import DIRTY_WARNING, EMPTY_JOURNAL_CONFIRMATION
 
 
 class CLITests(unittest.TestCase):
@@ -42,6 +42,45 @@ class CLITests(unittest.TestCase):
                 status, _, _ = self.call(["--json", "clear-dirty", "/dev/test"] + extra + ["--yes"])
                 self.assertEqual(status, 0)
                 clear.assert_called_once_with("/dev/test", None, expected_boot=expected)
+
+    def test_empty_journal_confirmation(self):
+        result = {"emptied": True, "journal": "clean", "journal_empty": True}
+        for tty, answer, yes, expected in ((False, None, False, False),
+                                            (True, "/wrong", False, False),
+                                            (True, "/dev/test", False, True),
+                                            (False, None, True, True)):
+            with self.subTest(tty=tty, answer=answer, yes=yes), \
+                    patch("sys.stdin.isatty", return_value=tty), \
+                    patch("builtins.input", return_value=answer), \
+                    patch("xbox_media_drive.cli.empty_journal", return_value=result) as empty:
+                status, output, error = self.call(["--json", "empty-journal", "/dev/test"] + (["--yes"] if yes else []))
+                self.assertEqual(status, 0 if expected else 1)
+                self.assertEqual(empty.called, expected)
+                self.assertIn(EMPTY_JOURNAL_CONFIRMATION, error)
+                if expected:
+                    self.assertTrue(json.loads(output)["emptied"])
+                elif not tty:
+                    self.assertIn("--yes", error)
+
+    def test_empty_journal_passes_expected_volume(self):
+        for extra, expected in (([], None), (["--expect-volume", "volume-id"], "volume-id")):
+            with self.subTest(extra=extra), patch("sys.stdin.isatty", return_value=False), \
+                    patch("xbox_media_drive.cli.empty_journal", return_value={"emptied": False}) as empty:
+                status, _, _ = self.call(["--json", "empty-journal", "/dev/test"] + extra + ["--yes"])
+                self.assertEqual(status, 0)
+                empty.assert_called_once_with("/dev/test", None, expected_boot=expected)
+
+    def test_inspect_notes_a_closed_but_not_empty_journal_outside_json(self):
+        for fields, machine, noted in (({"journal": "clean", "journal_empty": False}, False, True),
+                                       ({"journal": "clean", "journal_empty": False}, True, False),
+                                       ({"journal": "clean", "journal_empty": True}, False, False),
+                                       ({"journal": "open", "journal_empty": False}, False, False)):
+            with self.subTest(fields=fields, json=machine), \
+                    patch("xbox_media_drive.cli.inspect", return_value=dict(fields, ready=True)):
+                status, output, error = self.call((["--json"] if machine else []) + ["inspect", "/dev/test"])
+                self.assertEqual(status, 0)
+                self.assertEqual(JOURNAL_NOT_EMPTY_NOTE in error, noted)
+                self.assertIn("journal_empty", output)
 
     def test_check_exit_codes_and_problems_note(self):
         for verdict, expected, noted in (("clean", 0, False), ("problems", 3, True)):

@@ -58,6 +58,43 @@ jobs:
           sudo "$image" --cli --json check "$PWD/fresh.img" | tee check.json
           python -c "import json; r = json.load(open('check.json')); assert r['verdict'] == 'clean' and r['bundled'] is True, r"
           sha256sum -c fresh.sha256
+      - name: Empty a cleanly closed journal, then mount with the kernel's ntfs3 (as root)
+        run: |
+          image=$(ls "$PWD"/dist/linux/*.AppImage)
+          sudo modprobe ntfs3 || { sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe ntfs3; }
+          truncate -s 64M closed.img
+          build/linux-native/sbin/mkntfs -F -Q -L "Xbox Test" closed.img
+          # Restart pages from a real drive closed by an Xbox (client still listed, clean flag set), written with
+          # the image-only test harness.
+          cc -shared -fPIC -Ibuild/linux-native/include tests/image_session.c -Lbuild/linux-native/lib \
+            -Wl,-rpath,"$PWD/build/linux-native/lib" -lntfs-3g -o harness.so
+          python - <<'EOF'
+          import ctypes as C
+          data = bytearray(open("tests/fixtures/xbox-open-journal-restart-pages.bin", "rb").read())
+          for page in (0, 4096):
+              data[page + 62:page + 64] = (2).to_bytes(2, "little")
+          shim = C.CDLL("./harness.so")
+          shim.xmd_image_initialize.argtypes = [C.c_char_p, C.c_ulong]
+          shim.xmd_image_initialize.restype = C.c_void_p
+          shim.xmd_fixture_logfile.argtypes = [C.c_void_p, C.c_char_p, C.c_long]
+          lib = C.CDLL("build/linux-native/lib/libntfs-3g.so")
+          lib.ntfs_leave_file_security.argtypes = [C.c_void_p]
+          api = shim.xmd_image_initialize(b"closed.img", 0x08000000)
+          assert api and shim.xmd_fixture_logfile(api, bytes(data), len(data)) == 0
+          assert lib.ntfs_leave_file_security(api)
+          EOF
+          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json inspect "$PWD/closed.img" | tee before.json
+          python -c "import json; r = json.load(open('before.json')); assert r['journal'] == 'clean' and r['journal_empty'] is False, r"
+          sudo mkdir -p /mnt/closed
+          # For the record only: whether ntfs3 accepts the journal before it is emptied.
+          if sudo mount -t ntfs3 -o loop closed.img /mnt/closed; then echo "ntfs3 mounted it before emptying"; sudo umount /mnt/closed; else sudo dmesg | grep ntfs3 | tail -3; fi
+          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json empty-journal "$PWD/closed.img" --yes | tee emptied.json
+          python -c "import json; r = json.load(open('emptied.json')); assert r['emptied'] is True, r"
+          # A refused mount above may have set the dirty flag, which ntfs3 also refuses.
+          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json clear-dirty "$PWD/closed.img" --yes
+          sudo mount -t ntfs3 -o loop closed.img /mnt/closed
+          echo written | sudo tee /mnt/closed/after-empty.txt
+          sudo umount /mnt/closed
       - uses: actions/upload-artifact@v7
         with:
           name: linux-appimage
