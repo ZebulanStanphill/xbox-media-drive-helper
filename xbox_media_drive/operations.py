@@ -28,7 +28,8 @@ CLEAR_DIRTY_CONFIRMATION = ("Clearing the dirty flag hides whatever Windows was 
                             "This clears only the dirty flag; it doesn't reset the journal or repair anything.")
 
 
-EMPTY_JOURNAL_CONFIRMATION = ("This drive's NTFS journal is marked clean, so emptying it discards nothing. Linux's ntfs3 "
+EMPTY_JOURNAL_CONFIRMATION = ("This drive's NTFS journal is marked clean: every change it recorded has already "
+                              "been written to the drive, so emptying it loses no files or data. Linux's ntfs3 "
                               "driver can still refuse to mount a drive with such a journal (\"failed to replay log "
                               "file\"), and starts a fresh journal when it is empty; Windows and the Xbox also start a "
                               "fresh one. Nothing else on the drive changes.")

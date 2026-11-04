@@ -13,7 +13,8 @@ from .operations import (CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, EMPTY_JOURNAL_
                          inspect, journal_info, prepare, restore)
 
 JOURNAL_NOT_EMPTY_NOTE = ("The NTFS journal is closed but not empty. If Linux refuses to mount the drive read-write "
-                          "(\"failed to replay log file\"), run empty-journal on it; that discards nothing.")
+                          "(\"failed to replay log file\"), run empty-journal on it. That loses no files or data: "
+                          "a closed journal holds no unfinished changes.")
 
 
 def parser():

@@ -108,7 +108,8 @@ PRIVACY_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Priv
 
 
 JOURNAL_NOTE = ("This drive's NTFS journal is closed but not empty. If Linux won't mount it (\"failed to replay "
-                "log file\"), use Empty Journal. It discards nothing.")
+                "log file\"), use Empty Journal. That loses no files or data: a closed journal holds no "
+                "unfinished changes.")
 
 
 def label(text, name=None):
