@@ -95,6 +95,45 @@ jobs:
           sudo mount -t ntfs3 -o loop closed.img /mnt/closed
           echo written | sudo tee /mnt/closed/after-empty.txt
           sudo umount /mnt/closed
+      - name: Mount an open journal with the dirty flag read-only with ntfs3, writing nothing (as root)
+        run: |
+          image=$(ls "$PWD"/dist/linux/*.AppImage)
+          truncate -s 64M open.img
+          build/linux-native/sbin/mkntfs -F -Q -L "Xbox Test" open.img
+          # What an Xbox leaves behind (a real drive's open restart pages), plus the dirty flag ntfs3 then sets.
+          python - <<'EOF'
+          import ctypes as C
+          data = open("tests/fixtures/xbox-open-journal-restart-pages.bin", "rb").read()
+          shim = C.CDLL("./harness.so")
+          shim.xmd_image_initialize.argtypes = [C.c_char_p, C.c_ulong]
+          shim.xmd_image_initialize.restype = C.c_void_p
+          shim.xmd_fixture_directory.argtypes = [C.c_void_p, C.c_char_p]
+          shim.xmd_fixture_logfile.argtypes = [C.c_void_p, C.c_char_p, C.c_long]
+          shim.xmd_fixture_dirty.argtypes = [C.c_void_p]
+          lib = C.CDLL("build/linux-native/lib/libntfs-3g.so")
+          lib.ntfs_leave_file_security.argtypes = [C.c_void_p]
+          api = shim.xmd_image_initialize(b"open.img", 0x08000000)
+          assert api and shim.xmd_fixture_directory(api, b"Videos") == 0
+          assert shim.xmd_fixture_logfile(api, data, len(data)) == 0 and shim.xmd_fixture_dirty(api) == 0
+          assert lib.ntfs_leave_file_security(api)
+          EOF
+          sudo QT_QPA_PLATFORM=offscreen "$image" --cli --json inspect "$PWD/open.img" | tee open.json
+          python -c "import json; r = json.load(open('open.json')); assert r['journal'] == 'open' and r['dirty'] is True, r"
+          sha256sum open.img > open.sha256
+          # A writable device, as with a real drive: only the mount is read-only.
+          loop=$(sudo losetup --find --show open.img)
+          sudo mkdir -p /mnt/open
+          sudo mount -t ntfs3 -o ro "$loop" /mnt/open
+          findmnt -no OPTIONS /mnt/open | tr , '\n' | grep -qx ro
+          test -d /mnt/open/Videos
+          ! sudo touch /mnt/open/new.txt
+          sudo umount /mnt/open
+          sudo blockdev --flushbufs "$loop"
+          sha256sum -c open.sha256
+          # The same volume is refused read-write, which is why the app offers the read-only mount.
+          ! sudo mount -t ntfs3 "$loop" /mnt/open
+          sudo dmesg | grep ntfs3 | tail -3
+          sudo losetup -d "$loop"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-appimage

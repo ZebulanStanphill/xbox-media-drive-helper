@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -841,6 +842,56 @@ class GUITests(unittest.TestCase):
         self.assertIs(self.window.inspection, inspection)
         self.assertTrue(self.window.prepare_button.isEnabled())
 
+    def test_mount_button_platform_visibility(self):
+        for platform in ("linux", "darwin"):
+            with patch("sys.platform", platform):
+                window = MainWindow(auto_refresh=False)
+                self.assertEqual(window.mount_button.isHidden(), platform != "linux")
+                window.close()
+                window.deleteLater()
+
+    def test_mount_button_enabled_only_for_idle_unmounted_device(self):
+        with patch("sys.platform", "linux"):
+            self.window.update_unmount_button()
+            self.assertFalse(self.window.mount_button.isEnabled())
+            device = self.add_device(mounted=False)
+            item = self.window.drives.currentItem()
+            item.setData(Qt.UserRole, dict(device, image=True))
+            self.window.update_unmount_button()
+            self.assertFalse(self.window.mount_button.isEnabled())
+            item.setData(Qt.UserRole, device)
+            self.window.update_unmount_button()
+            self.assertTrue(self.window.mount_button.isEnabled())
+            with patch.object(self.window, "start") as start:
+                self.window.mount_button.click()
+            start.assert_called_once_with("mount", mount=self.window.selected_device()["path"])
+            self.window.worker = SimpleNamespace()
+            self.window.update_unmount_button()
+            self.assertFalse(self.window.mount_button.isEnabled())
+            self.window.worker = None
+            self.window.drives.clear()
+            self.add_device(mounted=True)
+            self.assertFalse(self.window.mount_button.isEnabled())
+
+    def test_mount_completion_opens_folder_and_preserves_inspection(self):
+        device = self.add_device(mounted=False)
+        inspection = {"ready": True, "changes_needed": 1}
+        self.window.inspection = inspection
+        with patch("xbox_media_drive.gui.mount_read_only", return_value={"device": device["path"], "mountpoint": "/media/Test"}) as mount, \
+                patch("xbox_media_drive.gui.discover", return_value=[SimpleNamespace(to_dict=lambda: dict(device, mounted=True))]), \
+                patch("xbox_media_drive.gui.shutil.which", return_value="/usr/bin/xdg-open"), \
+                patch("xbox_media_drive.gui.system_environment", return_value={"TEST": "value"}), \
+                patch("xbox_media_drive.gui.subprocess.Popen") as opened:
+            self.window.mount_selected()
+            self.assertIn("read-only", self.window.busy.text())
+            self.wait_for_idle()
+        mount.assert_called_once_with(device["path"])
+        opened.assert_called_once_with(["xdg-open", "/media/Test"], env={"TEST": "value"},
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.assertIs(self.window.inspection, inspection)
+        self.assertTrue(self.window.selected_device()["mounted"])
+        self.assertIn("read-only at /media/Test", self.window.activity.toPlainText())
+
     def test_unmount_button_follows_the_selected_device(self):
         self.assertIn(self.window.unmount_button, self.window.controls)
         self.assertFalse(self.window.unmount_button.isEnabled())
@@ -1303,6 +1354,15 @@ class DeviceArgumentTests(unittest.TestCase):
         window.action = "list"
         window.failed("boom")
         self.assertIsNone(window.initial_device)
+        window.followups.clear()
+
+    def test_failed_mount_lists_the_drives_again(self):
+        # A mount that fails our checks can still have mounted the volume.
+        window = self.window()
+        window.action = "mount"
+        with patch.object(window, "report"):
+            window.failed("mounted but NOT read-only")
+        self.assertEqual(window.followups, [window.refresh_devices])
         window.followups.clear()
 
     def test_other_failures_keep_the_pending_request(self):

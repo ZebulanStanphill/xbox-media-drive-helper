@@ -354,6 +354,44 @@ def unmount(path, whole=False):
     return target
 
 
+def mount_read_only(path):
+    """Mount an external Linux partition without writing to it."""
+    if not sys.platform.startswith("linux"):
+        raise DriveError("Mounting from this app is available on Linux only.")
+    target = resolve_path(path)
+    if not stat.S_ISBLK(os.stat(target).st_mode):
+        raise DriveError("Only external partitions can be mounted.")
+    node = linux_device(target)
+    if node.get("children"):
+        raise DriveError("Select the NTFS partition, not the whole disk.")
+    mountpoints = [point for point in node.get("mountpoints", []) if point]
+    if mountpoints:
+        raise DriveError("{} is already mounted at {}. Click Unmount first to remount it read-only.".format(
+            target, mountpoints[0]))
+    if not shutil.which("udisksctl"):
+        raise DriveError("udisksctl is not installed. Mount manually with sudo mount -o ro {} /mnt".format(target))
+    try:
+        output = run(["udisksctl", "mount", "-b", target, "-o", "ro"])
+    except DriveError as exc:
+        raise DriveError("{}\nCheck sudo dmesg | grep ntfs3 | tail -5".format(exc)) from exc
+    mountpoint = next((point for fresh, _ in linux_nodes()
+                       if os.path.realpath(fresh["path"]) == target
+                       for point in fresh.get("mountpoints", []) if point), None)
+    if not mountpoint:
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        prefix = "Mounted {} at ".format(target)
+        for line in output.splitlines():
+            if line.startswith(prefix):
+                mountpoint = line[len(prefix):].removesuffix(".")
+                break
+    if not mountpoint:
+        raise DriveError("{} was mounted but its mount point could not be found. Unmount it before continuing.".format(target))
+    if not os.statvfs(mountpoint).f_flag & os.ST_RDONLY:
+        raise DriveError("The volume was mounted at {} but NOT read-only. Unmount it before continuing.".format(mountpoint))
+    return {"device": target, "mountpoint": mountpoint}
+
+
 def identity(path):
     try:
         with open(path, "rb", buffering=0) as disk:

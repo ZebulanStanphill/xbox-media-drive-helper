@@ -147,6 +147,61 @@ class DeviceTests(unittest.TestCase):
             with self.assertRaisesRegex(DriveError, "dissented by PID 42(.|\n)*Close any apps"):
                 unmount("/dev/disk9s1")
 
+    def linux_mount(self, node=None, points=None, output="Mounted /dev/test1 at /media/Test", flags=os.ST_RDONLY,
+                    udisksctl="/usr/bin/udisksctl", external=True):
+        node = node if node is not None else {"path": "/dev/test1"}
+        fresh = {"path": "/dev/test1", "mountpoints": points or []}
+        with patch("sys.platform", "linux"), \
+                patch.object(devices, "resolve_path", return_value="/dev/test1"), \
+                patch.object(devices.os, "stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                patch.object(devices, "linux_nodes", side_effect=[[(node, external)], [(fresh, external)]]), \
+                patch.object(devices.shutil, "which", return_value=udisksctl), \
+                patch.object(devices.os, "statvfs", return_value=SimpleNamespace(f_flag=flags)), \
+                patch.object(devices, "run", return_value=output) as run:
+            return devices.mount_read_only("/dev/test1"), run
+
+    def test_linux_mount_command_and_fresh_lsblk_mountpoint(self):
+        result, run = self.linux_mount(points=[None, "/media/Fresh"])
+        self.assertEqual(result, {"device": "/dev/test1", "mountpoint": "/media/Fresh"})
+        run.assert_called_once_with(["udisksctl", "mount", "-b", "/dev/test1", "-o", "ro"])
+
+    def test_linux_mount_stdout_fallback(self):
+        for suffix in ("", "."):
+            result, _ = self.linux_mount(output="Mounted /dev/test1 at /media/Test" + suffix + "\n")
+            self.assertEqual(result["mountpoint"], "/media/Test")
+
+    def test_linux_mount_refuses_already_mounted(self):
+        with self.assertRaisesRegex(DriveError, "already mounted at /media/Test.*Unmount"):
+            self.linux_mount(node={"path": "/dev/test1", "mountpoints": [None, "/media/Test"]})
+
+    def test_linux_mount_missing_udisksctl(self):
+        with self.assertRaisesRegex(DriveError, "udisksctl is not installed.*sudo mount -o ro /dev/test1 /mnt"):
+            self.linux_mount(udisksctl=None)
+
+    def test_linux_mount_refuses_whole_disk_and_internal(self):
+        with self.assertRaisesRegex(DriveError, "Select the NTFS partition"):
+            self.linux_mount(node={"path": "/dev/test1", "children": [{}]})
+        with self.assertRaisesRegex(DriveError, "Only external"):
+            self.linux_mount(external=False)
+
+    def test_mount_refuses_non_linux(self):
+        with patch("sys.platform", "darwin"), self.assertRaisesRegex(DriveError, "Linux only"):
+            devices.mount_read_only("/dev/test1")
+
+    def test_linux_mount_checks_read_only_flag(self):
+        with self.assertRaisesRegex(DriveError, "/media/Test but NOT read-only.*Unmount"):
+            self.linux_mount(flags=0)
+
+    def test_linux_mount_failure_preserves_output_and_adds_hint(self):
+        with patch("sys.platform", "linux"), \
+                patch.object(devices, "resolve_path", return_value="/dev/test1"), \
+                patch.object(devices.os, "stat", return_value=SimpleNamespace(st_mode=stat.S_IFBLK)), \
+                patch.object(devices, "linux_device", return_value={}), \
+                patch.object(devices.shutil, "which", return_value="udisksctl"), \
+                patch.object(devices, "run", side_effect=DriveError("tool error")), \
+                self.assertRaisesRegex(DriveError, "tool error\\nCheck sudo dmesg.*tail -5"):
+            devices.mount_read_only("/dev/test1")
+
     def linux_unmount(self, node, external=True, udisksctl="/usr/bin/udisksctl"):
         with patch("sys.platform", "linux"), \
                 patch("xbox_media_drive.devices.linux_nodes", return_value=[(node, external)]), \

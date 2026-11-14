@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                               QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from . import DriveError, __version__, kde
-from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_access, system_environment, unmount,
-                      whole_disk)
+from .devices import (discover, is_disk_mounted, is_mounted, mac_full_disk_access, mount_read_only,
+                      system_environment, unmount, whole_disk)
 from .fsck import CHECK_PROBLEMS_NOTE, find_ntfsck
 from .native import journal_warning
 from .operations import CLEAR_DIRTY_CONFIRMATION, DIRTY_WARNING, EMPTY_JOURNAL_CONFIRMATION
@@ -167,10 +167,11 @@ class Worker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, arguments=None, listing=False, unmount=None, whole=False):
+    def __init__(self, arguments=None, listing=False, unmount=None, whole=False, mount=None):
         super().__init__()
         self.arguments = arguments
         self.listing = listing
+        self.mount = mount
         self.unmount = unmount
         self.whole = whole
 
@@ -178,6 +179,9 @@ class Worker(QThread):
         try:
             if self.listing:
                 self.done.emit({"devices": [device.to_dict() for device in discover()]})
+            elif self.mount:
+                result = mount_read_only(self.mount)
+                self.done.emit({"mounted": result["device"], "mountpoint": result["mountpoint"]})
             elif self.unmount:
                 # Unmounting needs no privileges, so it never goes through the elevated helper.
                 target = unmount(self.unmount, whole=True) if self.whole else unmount(self.unmount)
@@ -361,6 +365,15 @@ class MainWindow(QMainWindow):
         drive_buttons.addWidget(self.refresh, 1)
         drive_buttons.addWidget(self.unmount_button, 1)
         left.addLayout(drive_buttons)
+        self.mount_button = QPushButton("Mount Read-Only")
+        self.mount_button.setEnabled(False)
+        self.mount_button.setToolTip("Mount the selected volume read-only to browse its files. Linux allows this even "
+                                     "when the NTFS journal is open or the dirty flag is set, and nothing is written "
+                                     "to the drive.")
+        self.mount_button.clicked.connect(self.mount_selected)
+        if not sys.platform.startswith("linux"):
+            self.mount_button.hide()
+        left.addWidget(self.mount_button)
         left.addWidget(self.image)
         left.addWidget(label("Click Unmount before inspecting a volume; do not use Eject, which disconnects the drive.", "muted"))
         body.addLayout(left, 2)
@@ -517,7 +530,7 @@ class MainWindow(QMainWindow):
         self.activity.setPlaceholderText("Operation results will appear here.")
         layout.addWidget(self.activity)
         layout.addWidget(label("For media apps on your Xbox, choose “Use for Media” when prompted.", "muted"))
-        self.controls = [self.drives, self.refresh, self.unmount_button, self.image,
+        self.controls = [self.drives, self.refresh, self.unmount_button, self.mount_button, self.image,
                          self.tabs, self.library, self.check_filesystem_button, self.clear_dirty_button,
                          self.empty_journal_button,
                          self.check_mode_button, self.switch_mode_button, self.restore_sector_button]
@@ -615,6 +628,8 @@ class MainWindow(QMainWindow):
             mounted = any(other["mounted"] for other in self.listed_devices()
                           if other.get("disk") and other.get("disk") == device.get("disk"))
         self.unmount_button.setEnabled(self.worker is None and mounted)
+        self.mount_button.setEnabled(sys.platform.startswith("linux") and self.worker is None
+                                     and bool(device) and not device.get("image") and not device["mounted"])
 
     def select_drive(self, item, previous=None):
         if item and item.data(Qt.UserRole):
@@ -651,6 +666,11 @@ class MainWindow(QMainWindow):
 
     def refresh_devices(self):
         self.start("list", listing=True)
+
+    def mount_selected(self):
+        device = self.selected_device()
+        if device:
+            self.start("mount", mount=device["path"])
 
     def unmount_selected(self):
         device = self.selected_device()
@@ -876,7 +896,7 @@ class MainWindow(QMainWindow):
             self.mode_backup = backup
             self.start("restore-sector", ["mode", disk, "--restore", backup, "--yes"])
 
-    def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False, whole=False):
+    def start(self, action, arguments=None, listing=False, unmount=None, keep_inspection=False, whole=False, mount=None):
         if self.worker is not None:
             return
         if action == "inspect":
@@ -884,7 +904,7 @@ class MainWindow(QMainWindow):
         if listing and not keep_inspection:
             self.invalidate()
         self.action = action
-        self.worker = Worker(arguments, listing, unmount, whole)
+        self.worker = Worker(arguments, listing, unmount, whole, mount=mount)
         self.worker.done.connect(self.completed)
         self.worker.failed.connect(self.failed)
         self.worker.finished.connect(self.finished)
@@ -893,6 +913,8 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         if listing:
             text = "Finding external volumes…"
+        elif mount:
+            text = "Mounting {} read-only…".format(mount)
         elif unmount:
             text = "Unmounting {}…".format(unmount)
         elif action == "switch-mode":
@@ -951,6 +973,17 @@ class MainWindow(QMainWindow):
                 item.setFlags(Qt.NoItemFlags)
                 self.drives.addItem(item)
                 self.status.setText("No external volumes found. Connect a drive and refresh, or open an NTFS image.")
+        elif self.action == "mount":
+            mountpoint = result["mountpoint"]
+            self.log("Mounted {} read-only at {}. Click Unmount before using this app's other actions on it.".format(
+                result["mounted"], mountpoint))
+            if shutil.which("xdg-open"):
+                try:
+                    subprocess.Popen(["xdg-open", mountpoint], env=system_environment(),
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except OSError:
+                    self.log("The folder could not be opened: {}.".format(mountpoint))
+            self.followups.insert(0, lambda: self.start("list", listing=True, keep_inspection=True))
         elif self.action == "unmount":
             self.log("Unmounted {}. The drive stays connected.".format(result["unmounted"]))
             # Refresh the list without discarding an inspection, then resume any action that asked for the unmount.
@@ -1145,7 +1178,8 @@ class MainWindow(QMainWindow):
             self.report(QMessageBox.Warning, "Disk access needed", message, settings=True)
         else:
             self.report(QMessageBox.Warning, "Operation could not complete", message)
-        if disconnected:
+        if disconnected or self.action == "mount":
+            # A failed mount can still have mounted the volume (for example, not read-only), so list it again.
             self.followups.append(self.refresh_devices)
 
     def finished(self):
