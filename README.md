@@ -30,7 +30,7 @@ Preparation and restoration therefore remain host-side operations on Linux/macOS
 
 ### macOS application
 
-A self-contained **Universal** app for **macOS 15.8 or later** is built in `dist/macos/` as `Xbox-Media-Drive-Helper-<version>-universal.dmg`. It runs natively on both Apple silicon (M-series Macs) and Intel Macs. It is universal because macOS 27 warns about Intel-only apps, and macOS 28 won't open them on Apple silicon.
+A self-contained **Universal** app for **macOS 15.8 or later** is built in `dist/macos/` as `Xbox-Media-Drive-Helper-<version>-universal.dmg` (see [Building the installers](#building-the-installers)). It runs natively on both Apple silicon (M-series Macs) and Intel Macs. It is universal because macOS 27 warns about Intel-only apps, and macOS 28 won't open them on Apple silicon.
 
 Open the disk image, drag **Xbox Media Drive Helper.app** to **Applications**, then launch the installed copy. Python, Qt and NTFS-3G are bundled; no Python, Homebrew or FUSE installation is needed on those Macs. The CLI is also included inside the app. See [macOS packaging and verification](docs/macos-app.md).
 
@@ -42,7 +42,7 @@ The bundle minimum OS and every bundled Mach-O deployment target are checked aga
 
 ### Linux AppImage
 
-A self-contained build for Linux, `Xbox-Media-Drive-Helper-<version>-<arch>.AppImage`, bundles Python, Qt, NTFS-3G and the ntfsck filesystem checker, so nothing else needs installing besides FUSE. It is built on Ubuntu 22.04 and runs on distributions with a glibc at least that new. For now, download it from the `linux-appimage` artifact of the latest successful **Checks** run on GitHub, or build it yourself on Linux with `python3 scripts/build-linux.py` (needs a C compiler, `make`, `pkg-config` and `curl`; the result is in `dist/linux/`, with a source archive and `SHA256SUMS.txt`).
+A self-contained build for Linux, `Xbox-Media-Drive-Helper-<version>-<arch>.AppImage`, bundles Python, Qt, NTFS-3G and the ntfsck filesystem checker, so nothing else needs installing besides FUSE. It is built on Ubuntu 22.04 and runs on distributions with a glibc at least that new. For now, download it from the `linux-appimage` artifact of the latest successful **Checks** run on GitHub, or [build it yourself](#building-the-installers).
 
 ```sh
 chmod +x Xbox-Media-Drive-Helper-*.AppImage
@@ -80,8 +80,8 @@ For macOS, or to use the same tested library on Linux, build a project-local cop
 # macOS prerequisites: install Xcode Command Line Tools if needed, then:
 brew install pkgconf
 
-# Debian/Ubuntu build prerequisites instead:
-# sudo apt-get install build-essential pkg-config curl
+# Debian/Ubuntu build prerequisites instead (python3-venv is also what `python3 -m venv` above needs):
+# sudo apt-get install build-essential pkg-config curl python3-venv
 
 .venv/bin/python scripts/build-native.py
 .venv/bin/xbox-media-drive doctor
@@ -236,6 +236,44 @@ On Linux, **Mount Read-Only** works even when ntfs3 refuses a read-write mount b
 - **Results.** Exit code `0` means no problems; `4` means problems that ntfsck left uncorrected (`check` exits `3`). Any other exit code means ntfsck gave no verdict, and the app reports an error with its output. **Clear Dirty Flag…** mentions the latest result for the selected drive.
 - **Limits.** ntfsck is young (1.0.0, December 2025), so it can report problems that aren't real. It doesn't replay the NTFS journal, and its documentation recommends repairing journaled volumes in Windows. There are no macOS builds. Windows' `chkdsk` remains authoritative for drives last used by Windows or an Xbox.
 - **If it reports problems,** don't clear the dirty flag. Copy off anything you need, run `chkdsk X: /f` on Windows, then inspect the drive again here.
+
+## Building the installers
+
+Both builds must run from a git checkout of this repository (the source archive they produce is made from git's file list) and need internet access. Each downloads its pinned build tools and NTFS-3G into `build/`, checks their SHA-256 digests, and installs nothing system-wide. The app version in the file names comes from `xbox_media_drive/__init__.py`.
+
+### Linux AppImage
+
+On Debian or Ubuntu, install the build tools and the libraries Qt loads while the build renders the icon, then run the script with Python 3.9 or later:
+
+```sh
+sudo apt-get install git build-essential pkg-config curl python3-venv autoconf automake libtool libgcrypt20-dev \
+  libegl1 libgl1 libopengl0 libxkbcommon0 libfontconfig1 libdbus-1-3
+python3 scripts/build-linux.py
+```
+
+The result is in `dist/linux/`: `Xbox-Media-Drive-Helper-<version>-<arch>.AppImage`, a source archive and `SHA256SUMS.txt`. To check it, run `QT_QPA_PLATFORM=offscreen ./dist/linux/*.AppImage --self-test` and `./dist/linux/*.AppImage --cli doctor`.
+
+- **Architecture.** The AppImage is for the machine it is built on: `x86_64` or `aarch64`.
+- **Which distribution.** The AppImage runs on systems with a glibc at least as new as the build machine's, so build on the oldest distribution you want to support. The published x86-64 builds come from Ubuntu 22.04. An `aarch64` build needs glibc 2.39 or later (Ubuntu 24.04), because PySide6's ARM wheels do.
+- **Rebuilding.** `--skip-native-build` reuses the NTFS-3G already built in `build/linux-native`.
+- **autoconf, automake, libtool and libgcrypt20-dev** are for the bundled ntfsck, whose source ships without a generated `configure`. libgcrypt only supplies an autoconf macro; ntfsck is built without it.
+
+This package list was checked by building on a clean Ubuntu 24.04 (ARM) system; the x86-64 builds on Ubuntu 22.04 run in this repository's GitHub Actions workflow, whose runner already includes some of these packages.
+
+### macOS app and disk image
+
+On a Mac, install the Xcode Command Line Tools (`xcode-select --install`) and `pkg-config` (`brew install pkgconf`), then:
+
+```sh
+python3 scripts/build-macos.py
+```
+
+The result is in `dist/macos/`: `Xbox-Media-Drive-Helper-<version>-universal.dmg`, a source archive, `SHA256SUMS.txt`, and the app with its verification report in `universal2/`. The script builds for Apple silicon and Intel together. On an Apple silicon Mac it also runs the Intel half if Rosetta is installed (`softwareupdate --install-rosetta`); without Rosetta that half is built and inspected but not run.
+
+- **Rebuilding.** `--skip-native-build` reuses the NTFS-3G libraries already built; `--skip-dmg` stops after the app bundle.
+- **Signing.** Builds are ad-hoc signed unless you pass `--codesign-identity 'Developer ID Application: Your Name (TEAMID)'`.
+
+[macOS packaging and verification](docs/macos-app.md) describes what the script downloads, how it verifies the bundle, and redistribution.
 
 ## Tests
 
