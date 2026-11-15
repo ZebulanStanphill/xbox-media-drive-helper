@@ -134,6 +134,9 @@ class BundledTests(unittest.TestCase):
         self.owner = os.getuid()
         self.system = Path(self.temp.name) / "sbin"
         self.system.mkdir()
+        # Not the umask's choice: under umask 002 (Ubuntu's default) the directory would be group-writable,
+        # and an ntfsck in such a directory isn't trusted.
+        self.system.chmod(0o755)
         self.bundled = Path(self.temp.name) / "ntfsck"
         self.bundled.write_bytes(b"#!/bin/sh\n")
         self.bundled.chmod(0o755)
