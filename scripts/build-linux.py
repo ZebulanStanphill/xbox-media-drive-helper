@@ -2,8 +2,11 @@
 """Build a self-contained Linux AppImage.
 
 Everything downloaded is verified against a pinned SHA-256 digest and extracted into build/.
-Requires Linux, a C compiler, make, pkg-config and curl. The Python that runs this script
-(3.9+, 3.13 in CI) is bundled; build on the oldest glibc you want to support.
+Requires Linux, a git checkout, a C compiler, make, pkg-config, curl, autoconf, automake, libtool,
+libgcrypt's development files (for an autoconf macro; ntfsck is built without it) and the libraries Qt
+loads to render the icon. The README's "Building the installers" section lists the Debian/Ubuntu packages.
+The Python that runs this script (3.9+ with venv, 3.13 in CI) is bundled; build on the oldest glibc you
+want to support.
 """
 import argparse
 import hashlib
@@ -229,9 +232,12 @@ def main():
     architecture = platform.machine()
     if architecture not in APPIMAGETOOL:
         parser.error("Unsupported architecture: " + architecture)
-    for command in ("cc", "make", "pkg-config", "curl", "readelf"):
+    for command in ("git", "cc", "make", "pkg-config", "curl", "readelf", "autoreconf", "automake", "libtoolize"):
         if not shutil.which(command):
-            parser.error("Missing build tool: " + command + ". On Debian/Ubuntu: build-essential pkg-config curl.")
+            parser.error("Missing build tool: " + command + ". The README's \"Building the installers\" section "
+                         "lists the packages to install.")
+    if importlib.util.find_spec("ensurepip") is None:
+        parser.error("This Python can't create virtual environments. On Debian/Ubuntu: install python3-venv.")
     TOOLS.mkdir(parents=True, exist_ok=True)
     python = bootstrap()
     licenses(python)
