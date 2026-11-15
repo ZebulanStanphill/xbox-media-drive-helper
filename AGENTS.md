@@ -6,12 +6,15 @@ even when they're made in the same session.
 
 # Versioning
 
-Every commit to `master` that changes code (the app, its tests, packaging or
-build scripts) must bump the version in that same commit, following
+Every commit to `master` that changes the app, or what the builds contain
+(packaging and build scripts), must bump the version in that same commit, following
 [Semantic Versioning](https://semver.org): patch for fixes, minor for new
 features or changed behavior, major for incompatible changes such as a
-recovery-journal format that older versions can't read. Commits that only
-change documentation or agent instructions don't need a bump.
+recovery-journal format that older versions can't read.
+
+Don't bump the version for commits that only change tests, the build scripts'
+own checks (such as verifying that build tools are installed), CI,
+documentation or agent instructions: the app a user gets is the same.
 
 The version is defined only in `xbox_media_drive/__init__.py` (`__version__`);
 `pyproject.toml`, the macOS app bundle and the DMG names read it from there.
